@@ -33,12 +33,12 @@ jobs:
             apt-get update
             apt-get install -y python3 python3-pip python3-venv zip tar rar p7zip-full p7zip-rar unrar openssh-server curl
             
-            # 安装 Python 依赖 (包含 paramiko 和 pyinstaller)
+            # 安装 Python 依赖
             pip3 install --upgrade pip
             pip3 install -r requirements.txt
             pip3 install paramiko pyinstaller
             
-            # 打包为单文件二进制 (将 web 和 config.json 打包进去)
+            # 打包为单文件二进制
             pyinstaller --onefile --add-data 'web:web' --add-data 'config.json:.' main.py
             
             # 重命名二进制文件
@@ -52,17 +52,26 @@ jobs:
           name: binary-linux-${{ matrix.arch }}
           path: wzfilemanager-linux-${{ matrix.arch }}
 
-  # 任务 2：编译 Windows .exe 文件
+  # 任务 2：编译 Windows (Win7/Win10, 32位/64位)
   build-windows-exe:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: win32
+            python-arch: x86
+          - arch: win64
+            python-arch: x64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      # 使用 Python 3.8 以确保完美兼容 Windows 7
+      - name: Set up Python 3.8
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10' 
+          python-version: '3.8'
+          architecture: ${{ matrix.python-arch }}
 
       - name: Install dependencies
         run: |
@@ -71,20 +80,57 @@ jobs:
           pip install paramiko pyinstaller
 
       - name: Build .exe with PyInstaller
-        # 注意：Windows 环境下 PyInstaller 的 --add-data 分隔符是分号 ';' 而不是冒号 ':'
         run: |
           pyinstaller --onefile --add-data "web;web" --add-data "config.json;." main.py
-          mv dist/main.exe wzfilemanager-windows-amd64.exe
+          mv dist/main.exe wzfilemanager-windows-${{ matrix.arch }}.exe
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v3
         with:
-          name: binary-windows
-          path: wzfilemanager-windows-amd64.exe
+          name: binary-windows-${{ matrix.arch }}
+          path: wzfilemanager-windows-${{ matrix.arch }}.exe
 
-  # 任务 3：下载所有二进制并打包推送多架构 Docker 镜像
+  # 任务 3：编译 macOS (Intel 和 Apple Silicon)
+  build-macos-binary:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: intel
+            os: macos-13
+          - arch: arm64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install paramiko pyinstaller
+
+      - name: Build macOS binary with PyInstaller
+        run: |
+          pyinstaller --onefile --add-data "web:web" --add-data "config.json:." main.py
+          mv dist/main wzfilemanager-macos-${{ matrix.arch }}
+          chmod +x wzfilemanager-macos-${{ matrix.arch }}
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: binary-macos-${{ matrix.arch }}
+          path: wzfilemanager-macos-${{ matrix.arch }}
+
+  # 任务 4：下载 Linux 二进制并打包推送多架构 Docker 镜像
   build-and-push-docker:
-    needs: [build-linux-binary, build-windows-exe]
+    needs: [build-linux-binary, build-windows-exe, build-macos-binary]
     runs-on: ubuntu-20.04
     steps:
       - name: Download amd64 binary
@@ -107,7 +153,6 @@ jobs:
         run: |
           chmod +x binaries/wzfilemanager-linux-*
           
-          # 创建一个智能入口脚本，根据 CPU 架构自动调用对应的二进制文件
           cat << 'EOF' > binaries/entrypoint.sh
           #!/bin/bash
           ARCH=$(uname -m)
@@ -123,7 +168,6 @@ jobs:
           EOF
           chmod +x binaries/entrypoint.sh
 
-          # 生成 Dockerfile，固定暴露 36688 端口，并创建 logs 目录供映射
           cat << 'EOF' > Dockerfile
           FROM ubuntu:20.04
           WORKDIR /app
@@ -156,7 +200,6 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/wzfilemanager:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/wzfilemanager:${{ github.run_number }}
-        # 【关键修改】允许此步骤失败，即使 Docker 推送失败，也不影响上方已上传的二进制和 EXE 文件产出
         continue-on-error: true
 
       - name: Notify Docker push status
