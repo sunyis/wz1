@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=0.4, maximum-scale=1.5, user-scalable=yes">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>文件管理器</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" type="image/jpg" href="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783786831337.jpg">
+    <!-- CodeMirror 代码高亮 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/shell/shell.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/clike/clike.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/edit/matchbrackets.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <header class="top-bar">
+            <div class="top-left">
+                <span class="logo">📂 文件管理器</span>
+            </div>
+            <div class="top-center">
+                <div class="address-bar">
+                    <input type="text" id="pathInput" placeholder="输入路径..." />
+                    <button class="nav-btn" onclick="navigateToPath()">前往</button>
+                    <button class="nav-btn" onclick="goBack()">⬅️</button>
+                    <div style="margin-left: 15px;">
+                    <button class="btn-default refresh-btn" onclick="refreshList()">
+                    <svg t="1783996653174" class="icon" viewBox="0 0 1028 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="14286" width="16" height="16" style="vertical-align: middle; margin-top: -2px;">
+                    <path d="M1024 500.736a643.437714 643.437714 0 0 1-51.419429 154.185143c-76.653714 155.209143-207.652571 236.617143-392.923428 244.150857a692.662857 692.662857 0 0 1-249.051429-34.084571v-1.097143l-34.523428 80.676571a53.613714 53.613714 0 0 1-65.024 27.282286c-7.314286-2.194286-10.459429-5.558857-12.946286-7.314286-2.56-1.828571-8.484571-8.484571-9.801143-9.874286L33.572571 679.643429a56.173714 56.173714 0 0 1-7.826285-21.723429 41.179429 41.179429 0 0 1 1.170285-17.554286 37.010286 37.010286 0 0 1 7.826286-13.604571 68.242286 68.242286 0 0 1 23.478857-17.554286 54.857143 54.857143 0 0 1 8.923429-3.657143 6.802286 6.802286 0 0 0 3.364571-1.462857l305.956572-75.410286c16.310857-3.437714 31.963429-4.608 41.691428-2.779428 9.728 1.755429 11.849143 2.413714 18.139429 4.608a34.962286 34.962286 0 0 1 16.603428 14.262857 52.370286 52.370286 0 0 1 5.12 14.994286 65.462857 65.462857 0 0 1-2.194285 25.234285 9.508571 9.508571 0 0 0-1.170286 3.657143L418.742857 669.257143c63.414857 21.504 123.026286 34.669714 179.2 39.789714 56.246857 5.12 104.082286 3.949714 143.433143-3.657143a410.916571 410.916571 0 0 0 110.006857-37.229714c33.938286-17.261714 60.708571-34.377143 80.457143-51.2 19.748571-16.822857 37.449143-35.474286 52.955429-55.881143 15.652571-20.48 25.380571-34.377143 29.622857-41.910857 4.096-7.387429 7.314286-13.677714 9.508571-18.505143z m-1024-46.811429C16.457143 386.194286 39.350857 326.802286 69.193143 275.748571 154.843429 133.046857 290.596571 63.341714 476.745143 66.779429c82.651429 1.389714 157.769143 14.774857 225.499428 40.448L739.108571 27.574857c5.193143-8.630857 10.532571-14.628571 16.310858-19.163428a40.594286 40.594286 0 0 1 17.115428-7.314286 59.172571 59.172571 0 0 1 29.257143 1.901714c4.169143 1.462857 5.12 1.609143 9.216 3.876572a59.245714 59.245714 0 0 1 11.556571 8.923428l6.875429 8.045714 165.302857 273.92a72.411429 72.411429 0 0 1 6.729143 22.820572 41.252571 41.252571 0 0 1-1.243429 17.554286 32.694857 32.694857 0 0 1-8.338285 13.385142 60.416 60.416 0 0 1-11.702857 9.801143c-3.949714 2.56-8.045714 4.827429-12.288 6.729143l-8.850286 4.242286a8.045714 8.045714 0 0 1-3.437714 1.024l-308.077715 68.388571c-20.992 2.852571-37.668571 2.413714-50.249143-1.024a43.227429 43.227429 0 0 1-24.795428-17.627428 33.206857 33.206857 0 0 1-5.997714-17.993143 38.4 38.4 0 0 1 0.731428-13.897143 44.982857 44.982857 0 0 1 4.461714-11.556571l38.034286-79.579429c-62.537143-22.674286-122.002286-37.302857-178.688-43.446857-56.539429-6.144-104.448-6.144-143.36 0a399.652571 399.652571 0 0 0-110.592 34.084571c-34.596571 16.530286-62.025143 33.060571-82.139428 49.737143a401.481143 401.481143 0 0 0-54.637715 54.857143 461.165714 461.165714 0 0 0-31.378285 41.325714c-4.242286 7.314286-7.314286 13.165714-8.777143 17.261715z" fill="#33A2EF" p-id="14287"></path>
+                    </svg>&#8203;
+                    </button>
+                    </div>
+                </div>
+            </div>
+            <div class="top-right">
+                <button class="btn-primary" style="font-size: 16px; border: 1px solid var(--primary);" onclick="showUploadModal()">上传</button>
+                <button class="btn-primary" style="font-size: 16px; border: 1px solid var(--primary);" onclick="showCreateModal()">新建</button>
+                <button class="btn-default" onclick="toggleFavorites(event)">⭐️</button>
+                <button class="btn-default" onclick="showTrashModal()">🗑️</button>
+                <button class="btn-config" onclick="showConfigModal()">⚙️</button>
+                <div class="btn-divider"></div>
+                <button class="btn-danger" onclick="logout()">退出</button>
+            </div>
+        </header>
+
+        <!-- 收藏夹下拉菜单 -->
+        <div id="favoritesDropdown" class="dropdown-content hidden"></div>
+
+<div class="breadcrumb-bar">
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <!-- 外层只负责 flex 布局，不画边框 -->
+    <div style="display: flex; align-items: center; height: 34px; flex-shrink: 0; margin-left: 15px;">
+        <!-- 搜索输入区域：保留上、下、左边框，去掉右边框以实现无缝连接 -->
+        <div style="display: flex; align-items: center; border: 1px solid #e8e8e8; border-right: none; border-radius: 4px 0 0 4px; background-color: transparent; height: 100%; box-sizing: border-box;">
+            <input type="text" id="searchInput" placeholder="搜索文件..." style="border: none; background: transparent; padding: 0 10px; outline: none; font-size: 13px; width: 150px; height: 100%;">
+            <label style="display: flex; align-items: center; font-size: 12px; color: #666; padding-right: 10px; cursor: pointer; white-space: nowrap;">
+                <input type="checkbox" id="searchRecursive" style="margin-right: 4px;">包含子目录&nbsp;
+            </label>
+        </div>
+        <!-- 搜索按钮：保留完整边框，左侧无圆角，右侧圆角，背景色 #ededed 深一点 -->
+        <button onclick="performSearch()" style="border: 1px solid #e8e8e8; border-radius: 0 4px 4px 0; background-color: #ededed; cursor: pointer; padding: 0 12px; display: flex; align-items: center; justify-content: center; color: #666; height: 100%; box-sizing: border-box;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        </button>
+    </div>
+</div>
+
+        <!-- 批量操作菜单栏 (常驻显示) -->
+        <div class="batch-bar">
+            <div class="batch-ops">
+                <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)" title="全选/取消全选">
+                <button class="action-btn" onclick="invertSelect(event)">反选</button>
+                <button class="action-btn" onclick="batchAction('copy')" id="batchCopyBtn">复制</button>
+                <button class="action-btn" onclick="batchAction('move')" id="batchMoveBtn">移动</button>
+                <button class="action-btn" onclick="pasteFiles()">粘贴</button>
+                <button class="action-btn" onclick="batchAction('rename')">重命名</button>
+                <button class="action-btn" onclick="batchAction('compress')">压缩</button>
+                <button class="action-btn" id="batchExtractBtn" onclick="batchAction('extract')" style="display:none;">解压</button>
+                <button class="action-btn" onclick="batchAction('download')">下载</button>
+                <button class="action-btn" onclick="batchAction('perm')">权限</button>
+                <button class="action-btn" onclick="batchAction('info')">属性</button>
+                <button class="action-btn" onclick="showAnalyzeModal()">占用分析</button>
+                <button class="action-btn" id="batchAddFavBtn" onclick="batchAction('addFav')">添加收藏</button>
+                <button class="action-btn" id="batchDelFavBtn" onclick="batchAction('delFav')" style="display:none;">删除收藏</button>
+              <!--   <button class="action-btn danger" onclick="batchAction('delete')" style="margin-left: 5px;">删除</button> -->
+            </div>
+        </div>
+
+        <div class="main-content">
+            <table class="file-table">
+                <thead>
+                    <tr>
+                        <th class="col-checkbox"></th>
+                        <th class="col-name">文件名</th>
+                        <th class="col-size">大小</th>
+                        <th class="col-time">修改时间</th>
+                        <th class="col-perms">权限</th>
+                        <!-- 强制操作列右对齐并增加间距 -->
+                        <th class="col-actions" style="text-align: right; padding-right: 113px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="fileTableBody">
+                    <tr><td colspan="6" class="loading">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+<br><br><br><br>
+        <footer class="status-bar">
+            <span id="statusInfo">就绪</span>
+            <div id="diskInfo" class="disk-info">磁盘信息加载中...</div>
+            <span id="sshStatus" class="ssh-status">SSH: 检查中...</span>
+        </footer>
+    </div>
+
+    <!-- 编辑器模态框 -->
+    <div id="editorModal" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="editorTitle">编辑文件</h3>
+                <button class="modal-close" onclick="closeModal('editorModal')">×</button>
+            </div>
+            <div class="modal-body" oncontextmenu="event.stopPropagation()">
+                <textarea id="editorContent" class="code-editor"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="saveFileContent()">保存</button>
+                <button class="btn-default" onclick="closeModal('editorModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重命名美化弹窗 -->
+    <div id="renameModal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>重命名</h3>
+                <button class="modal-close" onclick="closeModal('renameModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>请输入新名称</label>
+                    <input type="text" id="renameInput" placeholder="输入新名称">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="confirmRename()">确定</button>
+                <button class="btn-default" onclick="closeModal('renameModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 上传模态框 -->
+    <div id="uploadModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>上传文件</h3>
+                <button class="modal-close" onclick="closeModal('uploadModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="dropZone" class="upload-drop-zone">
+                    <p>将文件拖放到此处</p>
+                    <div class="upload-btn-wrapper">
+                        <input type="file" id="uploadFile" multiple style="display:none;" onchange="handleFileSelect(this)">
+                        <button class="btn-upload-select" onclick="document.getElementById('uploadFile').click()">选择文件</button>
+                    </div>
+                </div>
+                <div id="uploadProgress" class="upload-list-container" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="uploadFiles()">开始上传</button>
+                <button class="btn-default" onclick="closeModal('uploadModal')">取消</button>
+            </div>
+        </div>
+        
+        <div id="overwriteModal" class="modal hidden" style="z-index: 1001; background: rgba(0,0,0,0.3);">
+            <div class="modal-content modal-small" style="width: 380px;">
+                <div class="modal-header"><h3>文件冲突</h3></div>
+                <div class="modal-body">
+                    <p id="overwriteMsg" style="margin-bottom: 15px;"></p>
+                    <div id="overwriteInputArea" class="hidden">
+                        <input type="text" id="overwriteNewName" class="form-control" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-default" id="overwriteSkipBtn">跳过</button>
+                    <button class="btn-default" id="overwriteRenameBtn">重命名</button>
+                    <button class="btn-primary" id="overwriteConfirmBtn">覆盖</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="batchOverwriteModal" class="modal hidden" style="z-index: 1002;">
+            <div class="modal-content" style="width: 600px;">
+                <div class="modal-header">
+                    <h3>批量解决文件冲突</h3>
+                    <button class="modal-close" onclick="cancelBatchOverwrite()">×</button>
+                </div>
+                <div class="modal-body">
+                    <p>以下文件在服务器上已存在，请选择如何处理：</p>
+                    <div style="margin: 15px 0; display: flex; gap: 10px;">
+                        <button class="btn-default" onclick="setBatchAction('overwrite')">选中项覆盖</button>
+                        <button class="btn-default" onclick="setBatchAction('skip')">选中项跳过</button>
+                        <button class="btn-default" onclick="setBatchAction('rename')">选中项重命名</button>
+                    </div>
+                    <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;">
+                        <table class="file-table" style="box-shadow: none; border-radius: 0;">
+                            <thead>
+                                <tr>
+                                    <th class="col-checkbox"><input type="checkbox" id="selectAllConflicts" onchange="toggleAllConflicts(this)" checked></th>
+                                    <th>文件名</th>
+                                    <th style="width: 120px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="conflictTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-default" onclick="cancelBatchOverwrite()">取消上传</button>
+                    <button class="btn-primary" onclick="confirmBatchOverwrite()">确定并上传</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建模态框 -->
+    <div id="createModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>新建</h3>
+                <button class="modal-close" onclick="closeModal('createModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>类型</label>
+                    <select id="createType">
+                        <option value="file">文件</option>
+                        <option value="dir">目录</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>名称</label>
+                    <input type="text" id="createName" placeholder="输入名称">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="createItem()">创建</button>
+                <button class="btn-default" onclick="closeModal('createModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 权限模态框 -->
+    <div id="permModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>权限设置</h3>
+                <button class="modal-close" onclick="closeModal('permModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <!-- 用户组设置 -->
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label>用户组</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="text" id="permGroup" placeholder="如 root" style="flex: 1;">
+                        <button type="button" class="btn-default" style="white-space: nowrap; padding: 6px 12px; font-size: 14px;" onclick="restoreDefaultGroup()">恢复默认</button>
+                    </div>
+                </div>
+                
+                <!-- 递归选项：普通 div，不使用 form-group，避免样式冲突，整体居中 -->
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <label style="display: inline-flex; align-items: center; white-space: nowrap; cursor: pointer; font-weight: normal; margin: 0;">
+                        <input type="checkbox" id="permRecursive" style="margin: 0 8px 0 0;">
+                        应用子目录和文件 (仅修改用户组时生效)
+                    </label>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>权限 (八进制)</label>
+                    <input type="text" id="permValue" placeholder="如 755" oninput="updatePermCheckboxes()">
+                </div>
+                <div id="permCheckboxes" class="perm-grid"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="setPermission()">应用</button>
+                <button class="btn-default" onclick="closeModal('permModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 压缩模态框 -->
+    <div id="compressModal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>压缩文件</h3>
+                <button class="modal-close" onclick="closeModal('compressModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>压缩格式</label>
+                    <select id="compressFormat">
+                        <option value="tar.gz">tar.gz</option>
+                        <option value="zip">zip</option>
+                        <option value="rar">rar</option>
+                        <option value="7z">7z</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>输出文件名</label>
+                    <input type="text" id="compressName" placeholder="archive.tar.gz">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="compressFiles()">压缩</button>
+                <button class="btn-default" onclick="closeModal('compressModal')">取消</button>
+            </div>
+        </div>
+    </div>
+
+<!-- 属性弹窗 -->
+<!-- 增加 oncontextmenu="event.stopPropagation()" 切断右键事件冒泡 -->
+<div id="infoModal" class="modal hidden" oncontextmenu="event.stopPropagation()">
+    <div class="modal-content modal-small">
+        <div class="modal-header">
+            <h3>文件属性</h3>
+            <button class="modal-close" onclick="closeModal('infoModal')">×</button>
+        </div>
+        <div class="modal-body" id="infoModalBody"></div>
+    </div>
+</div>
+
+<!-- 回收站模态框 -->
+<div id="trashModal" class="modal hidden">
+    <div class="modal-content modal-large" style="height: 600px;">
+        <div class="modal-header">
+            <h3>🗑️ 回收站</h3>
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <button class="btn-danger" style="font-size: 16px; border: 1px solid transparent;" onclick="clearTrash()">清空回收站</button>
+                <button class="btn-default" id="trashToggleBtn" onclick="toggleTrashEnabled()">关闭回收站</button>
+                <button class="modal-close" onclick="closeModal('trashModal')">×</button>
+            </div>
+        </div>
+        
+            <div class="modal-body">
+                <table class="file-table">
+                    <thead>
+                        <tr>
+                            <th class="col-name">文件名</th>
+                            <th class="col-size">大小</th>
+                            <th class="col-time">删除时间</th>
+                            <th class="col-actions">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trashTableBody">
+                        <tr><td colspan="4" class="loading">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通用确认弹窗 -->
+    <div id="confirmModal" class="modal hidden" style="z-index: 1001; background: rgba(0,0,0,0.5);">
+        <div class="modal-content modal-small" style="width: 350px;">
+            <div class="modal-header"><h3 id="confirmTitle">确认操作</h3></div>
+            <div class="modal-body"><p id="confirmMsg" style="text-align: center; font-size: 14px;"></p></div>
+            <div class="modal-footer">
+                <button class="btn-default" id="confirmCancelBtn">取消</button>
+                <button class="btn-primary" id="confirmOkBtn">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 小提示弹窗 -->
+    <div id="alertModal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header"><h3>提示</h3></div>
+            <div class="modal-body"><p id="alertMsg"></p></div>
+            <div class="modal-footer"><button class="btn-primary" onclick="closeModal('alertModal')">确定</button></div>
+        </div>
+    </div>
+
+    <!-- 配置模态框 -->
+    <div id="configModal" class="modal hidden">
+        <div class="modal-content modal-large" style="height: 620px;">
+            <div class="modal-header">
+                <h3>系统配置</h3>
+                <button class="modal-close" onclick="closeModal('configModal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="config-tabs">
+                    <button class="tab-btn active" data-tab="ssh" onclick="switchTab('ssh')">SSH 配置</button>
+                    <button class="tab-btn" data-tab="security" onclick="switchTab('security')">安全设置</button>
+                    <button class="tab-btn" data-tab="server" onclick="switchTab('server')">服务器</button>
+                    <button class="tab-btn" data-tab="about" onclick="switchTab('about')">关于</button>
+                </div>
+
+                <div id="tab-ssh" class="tab-content active">
+                    <div class="form-group"><label>SSH 主机</label><input type="text" id="sshHost"></div>
+                    <div class="form-group"><label>SSH 端口</label><input type="number" id="sshPort" value="22"></div>
+                    <div class="form-group"><label>用户名</label><input type="text" id="sshUser" value="root"></div>
+                    <div class="form-group"><label>认证方式</label><select id="sshAuthType" onchange="toggleAuthType()"><option value="password">密码</option><option value="key">密钥</option></select></div>
+                    <div id="passwordAuth" class="auth-section">
+                        <div class="form-group"><label>密码</label><input type="password" id="sshPassword"></div>
+                    </div>
+                    <div id="keyAuth" class="auth-section" style="display:none;">
+                        <div class="form-group"><label>密钥路径</label><input type="text" id="sshKeyPath" placeholder="/root/.ssh/id_rsa"></div>
+                        <div class="form-group"><label>密钥密码 (可选)</label><input type="password" id="sshKeyPassword"></div>
+                    </div>
+                    <div class="form-actions-center">
+                        <button class="btn-primary btn-lg" onclick="saveSSHConfig()">保存并连接</button>
+                    </div>
+                </div>
+
+                <div id="tab-security" class="tab-content">
+                    <div class="form-group"><label>当前密码</label><input type="password" id="oldPassword"></div>
+                    <div class="form-group"><label>新密码</label><input type="password" id="newPassword"></div>
+                    <div class="form-group"><label>确认新密码</label><input type="password" id="confirmPassword"></div>
+                    <div class="form-actions-center">
+                        <button class="btn-primary btn-lg" onclick="changePassword()">修改密码</button>
+                    </div>
+                </div>
+
+                <div id="tab-server" class="tab-content">
+                    <div id="serverInfoDisplay" class="info-box"></div>
+                    <div class="form-group"><label>监听地址</label><input type="text" id="serverHost" value="0.0.0.0"></div>
+                    <div class="form-group"><label>端口</label><input type="number" id="serverPort"></div>
+                    <div class="form-actions-center">
+                        <button class="btn-primary btn-lg" onclick="saveServerConfig()">保存 (重启生效)</button>
+                    </div>
+                </div>
+
+                <div id="tab-about" class="tab-content">
+                    <div class="about-box">
+                        <div class="about-title-center">
+                        <h2>WzFileManager</h2>
+                            <span class="about-version">&nbsp;&nbsp;&nbsp;v1.0.0</span>
+                        </div>
+                        <div class="about-desc-center">
+                            <p>一个轻量、美观、跨平台的远程文件管理器，旨在为您提供高效、便捷的服务器文件管理体验。支持代码高亮、批量上传、回收站等实用功能。</p>
+                        </div>
+                        
+                        <div class="about-group">
+                            <h3>反馈</h3>
+                            <p>🌐 官网: <a href="https://wuzhij.com" class="plain-link">https://wuzhij.com</a></p>
+                            <p>📧 邮箱: <a href="mailto:wuzhij@qq.com" class="plain-link">wuzhij@qq.com</a></p>
+                        </div>
+                        
+                        <div class="about-group">
+                            <h3>官方群</h3>
+                            <p>💬 QQ群: <a href="http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=fJVcAzldYmLn5AB-K-6CtP55aDqV72-r&authKey=HRs8tlZmqvCNtuzF1P9ssrCdPRkEQsmZtl0GKcGEvi9C%2FznKPvB9LpucNcGbcuJ%2F&noverify=0&group_code=303093669" class="plain-link">303093669</a></p>
+                            <p>✈️ Telegram: <a href="https://t.me/+U6D5z2_75XKzMyWy" class="plain-link">点击加入</a></p>
+                        </div>
+
+                        <div class="about-group">
+                            <h3>赞助我们</h3>
+                            <div class="sponsor-images">
+                                <div class="sponsor-item">
+                                    <img src="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783784518866.jpg" alt="微信赞助" class="sponsor-qr">
+                                    <span>微信</span>
+                                </div>
+                                <div class="sponsor-item">
+                                    <img src="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783785546066.jpg" alt="支付宝赞助" class="sponsor-qr">
+                                    <span>支付宝</span>
+                                </div>
+                                <div class="sponsor-item">
+                                    <img src="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783785576082.jpg" alt="QQ赞助" class="sponsor-qr">
+                                    <span>QQ</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右键菜单 -->
+    <div id="contextMenu" class="context-menu hidden"></div>
+
+    <!-- 图片预览弹窗 -->
+    <div id="imagePreviewModal" class="modal hidden" onclick="if(event.target === this) closeModal('imagePreviewModal')">
+        <div class="modal-content" style="max-width: 100%; max-height: auto; padding: 0; background: transparent; box-shadow: none; display: flex; align-items: center; justify-content: center;">
+            <div style="position: relative; display: inline-block; overflow: visible;">
+                <span class="preview-close-btn" onclick="closeModal('imagePreviewModal')">×</span>
+                <div class="preview-img-wrap">
+                <img id="previewImage" src="" alt="">
+             </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 占用分析弹窗 -->
+    <div id="analyzeModal" class="modal hidden">
+        <div class="modal-content modal-large" style="height: 80vh;">
+            <div class="modal-header" style="display: block;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>储存占用分析</h3>
+                    <div style="display: flex; align-items: center; gap: 20px;">
+                        <button class="btn-primary" onclick="openAnalyzePathInMain()">打开</button>
+                        <button class="btn-danger hidden" id="analyzeDeleteBtn" onclick="deleteAnalyzeItems()">删除选中</button>
+                        <button class="modal-close" onclick="closeModal('analyzeModal')">×</button>
+                    </div>
+                </div>
+                <div style="font-size: 14px; margin-top: 10px; color: var(--text-secondary); display: flex; align-items: center; gap: 10px;">
+                    <span>储存位置:</span>
+                    <div id="analyzeBreadcrumb" style="display: flex; align-items: center; gap: 5px;"></div>
+                    <span style="margin-left: 20px;">总大小: <span id="analyzeTotalSize" style="font-weight: bold; color: var(--text);"></span></span>
+                </div>
+            </div>
+            <div class="modal-body" style="padding: 0;">
+                <table class="file-table" style="box-shadow: none;">
+                    <thead>
+                        <tr>
+                            <th class="col-checkbox"><input type="checkbox" id="analyzeSelectAll" onchange="toggleAnalyzeSelectAll(this)"></th>
+                            <th>名称</th>
+                            <th style="width: 150px; text-align: right; padding-right: 20px;">大小</th>
+                            <th style="width: 220px; text-align: center;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="analyzeTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+<!-- 文件搜索弹窗 -->
+<div id="searchModal" class="modal hidden">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h3>文件搜索</h3>
+                        <div style="display: flex; gap: 20px; align-items: center; margin-right: 15px;">
+                <button class="btn-primary" style="padding: 6px 16px; font-size: 14px;" onclick="openSearchItem()">打开</button>
+                <button class="btn-danger" style="padding: 6px 16px; font-size: 14px;" onclick="deleteSearchItems()">删除</button>
+                <button class="modal-close" onclick="closeModal('searchModal')">×</button>
+            </div>
+        </div>
+        <div class="modal-body">
+            <div style="margin-bottom: 20px; font-size: 14px; color: #666; text-align: center;">
+                <div id="searchInfo">文件搜索中...请稍等</div>
+            </div>
+            <div style="border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 60vh; overflow-y: auto; min-height: 450px;">
+                <!-- 修改：table-layout 改为 auto，让操作列自动撑开，防止按钮被隐藏 -->
+                <table class="file-table" style="border: none; table-layout: auto;">
+                    <thead>
+                        <tr>
+                            <th class="col-checkbox" style="width: 40px;"><input type="checkbox" onclick="toggleSearchSelectAll(this)"></th>
+                            <th>名称</th>
+                            <th class="col-size" style="width: 100px;">大小</th>
+                            <th class="col-time" style="width: 140px;">修改时间</th>
+                            <th style="width: 220px; text-align: center;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="searchTableBody">
+                        <tr><td colspan="5" class="loading">文件搜索中...请稍等</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+                  </html>
