@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": null,
+    "port_range": [30000, 55000],
+    "auto_port": true
+  },
+  "auth": {
+    "password": "admin123",
+    "session_timeout": 2592000,
+    "max_attempts": 5,
+    "lock_minutes": 30
+  },
+  "ssh": {
+    "host": "",
+    "port": 22,
+    "username": "root",
+    "auth_type": "password",
+    "password": "",
+    "key_path": "",
+    "key_password": ""
+  },
+  "security": {
+    "allowed_ips": [],
+    "https": false,
+    "ssl_cert": "",
+    "ssl_key": ""
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/app.log"
+  }
+}
