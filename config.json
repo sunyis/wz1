@@ -1,7 +1,7 @@
 {
   "server": {
     "host": "0.0.0.0",
-    "port": null,
+    "port": 36688,
     "port_range": [30000, 55000],
     "auto_port": true
   },
