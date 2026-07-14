@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="robots" content="noindex, nofollow">
+    <title>WzFileManager - 登录</title>
+    <link rel="icon" type="image/jpg" href="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783786831337.jpg">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        /* 显示/隐藏密码图标样式 */
+        #togglePassword .icon {
+            width: 20px;
+            height: 20px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            vertical-align: middle;
+        }
+        #togglePassword .icon-eye-off { display: none; }
+        #togglePassword[data-visible="true"] .icon-eye-open { display: none; }
+        #togglePassword[data-visible="true"] .icon-eye-off { display: inline; }
+
+        .error-msg {
+            height: 24px;
+            line-height: 24px;
+            overflow: hidden;
+            margin-top: 15px;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-8px); }
+            40%, 80% { transform: translateX(8px); }
+        }
+        .shake { animation: shake 0.4s ease-in-out; }
+    </style>
+</head>
+<body class="login-body">
+    <div class="login-container">
+        <div class="login-box" id="loginBox">
+            <div class="login-header">
+                <div class="login-logo">📂</div>
+                <h1>文件管理器</h1>
+                <p>请输入密码登录</p>
+            </div>
+            <form id="loginForm" class="login-form">
+                <div class="form-group" style="position: relative;">
+                    <input type="password" id="password" name="password" placeholder="请输入访问密码" required autocomplete="off" style="padding: 12px 40px 12px 16px;">
+                    <span id="togglePassword"
+                          style="position: absolute; right: 5px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; user-select: none; line-height: 1; color:#666;"
+                          role="button" tabindex="0" aria-label="显示密码" aria-pressed="false" data-visible="false">
+                        <svg class="icon icon-eye-open" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg class="icon icon-eye-off" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M2 2l20 20"></path>
+                            <path d="M3.6 8.3C5.7 5.9 8.7 4 12 4c7 0 11 8 11 8-.8 1.4-1.8 2.8-3 3.9"></path>
+                            <path d="M6.1 15.7C7.9 17.1 9.9 18 12 18c7 0 11-6 11-6"></path>
+                        </svg>
+                    </span>
+                </div>
+                <button type="submit" class="btn-login" id="loginBtn">登 录</button>
+                <div id="errorMsg" class="error-msg"></div>
+            </form>
+        </div>
+    </div>
+    <script>
+        // 密码明/暗文切换
+            var passwordInput = document.getElementById('password');
+            var toggle = document.getElementById('togglePassword');
+
+            function togglePwd() {
+                var show = passwordInput.type === 'password';
+                passwordInput.type = show ? 'text' : 'password';
+                toggle.setAttribute('data-visible', show);
+                toggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+                toggle.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+            }
+
+            toggle.addEventListener('click', togglePwd);
+            toggle.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    togglePwd();
+                }
+            });
+        })();
+
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            var password = document.getElementById('password').value;
+            var errorMsg = document.getElementById('errorMsg');
+            var loginBtn = document.getElementById('loginBtn');
+            var loginBox = document.getElementById('loginBox');
+            
+            if (loginBtn.disabled) return;
+
+            errorMsg.textContent = '';
+            loginBtn.disabled = true;
+            loginBtn.textContent = '登录中...';
+
+            try {
+                var resp = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: password })
+                });
+                var data = await resp.json();
+                if (data.success) {
+                    loginBtn.textContent = '登录成功';
+                    window.location.href = '/';
+                } else {
+                    errorMsg.textContent = data.msg;
+                    loginBox.classList.remove('shake');
+                    void loginBox.offsetWidth;
+                    loginBox.classList.add('shake');
+                }
+            } catch (err) {
+                errorMsg.textContent = '网络错误，请重试';
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = '登 录';
+            }
+        });
+    </script>
+</body>
+</html>
