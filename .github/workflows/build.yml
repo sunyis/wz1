@@ -41,7 +41,7 @@ jobs:
               RAR_PKG='rar'
             fi
             
-            # 【关键修复】加入 build-essential, libffi-dev, libssl-dev 解决 cffi/pynacl 源码编译报错
+            # 加入 build-essential, libffi-dev, libssl-dev 解决 cffi/pynacl 源码编译报错
             apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
             
             # 创建并激活虚拟环境
@@ -102,7 +102,7 @@ jobs:
           name: binary-windows-${{ matrix.arch }}
           path: wzfilemanager-windows-${{ matrix.arch }}.exe
 
-  # 任务 4：下载 Linux 二进制并打包推送多架构 Docker 镜像
+  # 任务 3：下载 Linux 二进制并打包推送多架构 Docker 镜像
   build-and-push-docker:
     needs: [build-linux-binary, build-windows-exe]
     runs-on: ubuntu-latest
@@ -137,8 +137,8 @@ jobs:
           EOF
           chmod +x binaries/entrypoint.sh
 
-          # 生成 Dockerfile，基础镜像为 22.04，安装 p7zip-full，并下载官方 rar
-          cat << 'EOF' > Dockerfile
+          # 【关键修复】将 Dockerfile 生成到 binaries 目录中，与 context 路径一致
+          cat << 'EOF' > binaries/Dockerfile
           FROM ubuntu:22.04
           ENV DEBIAN_FRONTEND=noninteractive
           WORKDIR /app
@@ -187,7 +187,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./binaries
-          file: ./Dockerfile
+          file: ./binaries/Dockerfile # 【关键修复】指向 binaries 目录中的 Dockerfile
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
