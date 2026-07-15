@@ -104,8 +104,8 @@ jobs:
 
   # 任务 4：下载 Linux 二进制并打包推送多架构 Docker 镜像
   build-and-push-docker:
-    needs: [build-linux-binary, build-windows-exe, build-macos-binary]
-    runs-on: ubuntu-latest
+    needs: [build-linux-binary, build-windows-exe]
+    runs-on: ubuntu:22.04
     steps:
       - name: Download amd64 binary
         uses: actions/download-artifact@v4
