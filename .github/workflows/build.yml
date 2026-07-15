@@ -1,4 +1,4 @@
-name: Build Multi-Arch Binary
+name: Build Multi-Arch Binary and Docker
 
 on:
   workflow_dispatch: # 允许在 GitHub 页面手动点击触发
@@ -12,7 +12,7 @@ jobs:
   build-linux-binary:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # 关闭快速失败
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -29,22 +29,22 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Compile binary in Ubuntu 22.04
-        timeout-minutes: 30 # 增加 ARM 源码编译的容错时间
+        timeout-minutes: 30
         run: |
           echo "使用 Ubuntu 22.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:22.04 bash -c "
             set -e
-            apt-get update
-            # 仅 amd64 架构安装 rar 包
+            # 【关键修复】清理可能损坏的缓存，并加入重试机制，防止 ARM 架构下 apt-get update 偶发失败
+            rm -rf /var/lib/apt/lists/*
+            apt-get update || (sleep 5 && apt-get update) || (sleep 10 && apt-get update)
+            
             RAR_PKG=''
             if [ '${{ matrix.arch }}' = 'amd64' ]; then
               RAR_PKG='rar'
             fi
             
-            # 加入 build-essential, libffi-dev, libssl-dev 解决 cffi/pynacl 源码编译报错
             apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
             
-            # 创建并激活虚拟环境
             python3 -m venv venv
             source venv/bin/activate
             
@@ -52,7 +52,6 @@ jobs:
             pip3 install --prefer-binary -r requirements.txt
             pip3 install --prefer-binary paramiko pyinstaller
             
-            # 将 web, core 和 config.json 打包进二进制
             pyinstaller --onefile --add-data 'web:web' --add-data 'core:core' --add-data 'config.json:.' main.py
             
             mv dist/main wzfilemanager-linux-${{ matrix.arch }}
@@ -80,7 +79,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 使用 Python 3.8 以确保完美兼容 Windows 7
       - name: Set up Python 3.8
         uses: actions/setup-python@v5
         with:
@@ -94,7 +92,6 @@ jobs:
           pip install --prefer-binary paramiko pyinstaller
 
       - name: Build .exe with PyInstaller
-        # 注意：Windows 环境下 PyInstaller 的 --add-data 分隔符是分号 ';' 而不是冒号 ':'
         run: |
           pyinstaller --onefile --add-data "web;web" --add-data "core;core" --add-data "config.json;." main.py
           mv dist/main.exe wzfilemanager-windows-${{ matrix.arch }}.exe
@@ -134,3 +131,120 @@ jobs:
         with:
           name: binary-macos-arm64
           path: wzfilemanager-macos-arm64
+
+  # 任务 4：分别打包 3 个独立架构的 Docker 镜像
+  build-single-arch-docker:
+    needs: [build-linux-binary]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+    steps:
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-linux-${{ matrix.arch }}
+          path: binaries
+
+      - name: Prepare Docker context
+        run: |
+          cat << 'EOF' > binaries/Dockerfile
+          FROM ubuntu:22.04
+          ENV TZ=Asia/Shanghai
+          ENV DEBIAN_FRONTEND=noninteractive
+          WORKDIR /opt/wzfilemanager
+
+          RUN apt-get update && \
+              apt-get install -y --no-install-recommends \
+              zip tar p7zip-full unrar openssh-client bash tzdata && \
+              if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+                  apt-get install -y --no-install-recommends rar; \
+              fi && \
+              rm -rf /var/lib/apt/lists/* && \
+              ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
+              echo ${TZ} > /etc/timezone
+
+          COPY wzfilemanager-linux-${{ matrix.arch }} /opt/wzfilemanager/wzfilemanager
+          RUN chmod +x /opt/wzfilemanager/wzfilemanager
+
+          COPY start.sh /start.sh
+          RUN chmod +x /start.sh
+
+          EXPOSE 36688
+          VOLUME ["/opt/wzfilemanager/data"]
+          CMD ["/start.sh"]
+          EOF
+
+          cat << 'EOF' > binaries/start.sh
+          #!/bin/bash
+          APP_DIR="/opt/wzfilemanager"
+          DATA_DIR="$APP_DIR/data"
+          BINARY="$APP_DIR/wzfilemanager"
+
+          mkdir -p "$DATA_DIR/logs"
+
+          if [ ! -f "$DATA_DIR/config.json" ]; then
+            echo '{"server":{"host":"0.0.0.0","port":36688,"port_range":[30000,55000]},"auth":{"password":"admin123","session_timeout":2592000,"max_attempts":5,"lock_minutes":30},"ssh":{"port":22,"username":"root","auth_type":"password","password":"","key_path":"","key_password":""},"security":{"allowed_ips":[],"https":false},"logging":{"level":"INFO","file":"logs/app.log"}}' > "$DATA_DIR/config.json"
+          fi
+
+          ln -sfn "$DATA_DIR/config.json" "$APP_DIR/config.json"
+          ln -sfn "$DATA_DIR/logs" "$APP_DIR/logs"
+
+          echo "Starting WzFileManager..."
+          exec "$BINARY"
+          EOF
+          chmod +x binaries/start.sh
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push single-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./binaries
+          file: ./binaries/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-${{ matrix.arch }}
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest-${{ matrix.arch }}
+        continue-on-error: true
+
+  # 任务 5：合并多架构镜像清单
+  build-multi-arch-manifest:
+    needs: [build-single-arch-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create and push multi-arch manifest
+        run: |
+          docker buildx imagetools create -t ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }} \
+          -t ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest \
+          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-amd64 \
+          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-arm64 \
+          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-armv7
+        continue-on-error: true
