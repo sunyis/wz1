@@ -5,7 +5,8 @@ APP_DIR="/opt/wzfilemanager"
 DATA_DIR="$APP_DIR/data"
 PID_FILE="$DATA_DIR/wzfilemanager.pid"
 LOG_FILE="$DATA_DIR/wzfilemanager.log"
-CONFIG_FILE="$DATA_DIR/config.json"
+# 配置文件放在程序根目录，防止挂载时被识别为文件夹
+CONFIG_FILE="$APP_DIR/config.json"
 BINARY="$APP_DIR/wzfilemanager"
 
 # 确保数据目录存在
