@@ -23,7 +23,7 @@ RUN apt-get update && \
     ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
     echo ${TZ} > /etc/timezone
 
-# 下载主程序二进制 (增加 .bin 后缀，下载后重命名)
+# 下载主程序二进制
 RUN case "${TARGETARCH}" in \
       "amd64") PLATFORM="amd64" ;; \
       "arm64") PLATFORM="arm64" ;; \
@@ -35,10 +35,8 @@ RUN case "${TARGETARCH}" in \
       *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
     esac \
     && echo "Building for platform: ${PLATFORM}" \
-    # 使用自定义地址下载主程序，URL拼接 .bin 后缀，先保存为 wzfilemanager.bin
-    && wget --tries=3 --timeout=30 --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager.bin "http://www.wztv.zone.id/v${VERSION}/wzfilemanager-linux-${PLATFORM}" \
-    # 重命名为 wzfilemanager 并赋予执行权限
-    && mv /opt/wzfilemanager/wzfilemanager.bin /opt/wzfilemanager/wzfilemanager \
+    # 直接下载为目标文件名
+    && wget --tries=3 --timeout=30 --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager "http://www.wztv.zone.id/v${VERSION}/wzfilemanager-linux-${PLATFORM}" \
     && chmod +x /opt/wzfilemanager/wzfilemanager
 
 # 复制启动脚本
