@@ -1,4 +1,4 @@
-name: Build, Package and Push Multi-Arch Docker (Ubuntu 22.04)
+name: Build Multi-Arch Binary
 
 on:
   workflow_dispatch: # 允许在 GitHub 页面手动点击触发
@@ -52,6 +52,7 @@ jobs:
             pip3 install --prefer-binary -r requirements.txt
             pip3 install --prefer-binary paramiko pyinstaller
             
+            # 将 web, core 和 config.json 打包进二进制
             pyinstaller --onefile --add-data 'web:web' --add-data 'core:core' --add-data 'config.json:.' main.py
             
             mv dist/main wzfilemanager-linux-${{ matrix.arch }}
@@ -79,6 +80,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 使用 Python 3.8 以确保完美兼容 Windows 7
       - name: Set up Python 3.8
         uses: actions/setup-python@v5
         with:
@@ -92,6 +94,7 @@ jobs:
           pip install --prefer-binary paramiko pyinstaller
 
       - name: Build .exe with PyInstaller
+        # 注意：Windows 环境下 PyInstaller 的 --add-data 分隔符是分号 ';' 而不是冒号 ':'
         run: |
           pyinstaller --onefile --add-data "web;web" --add-data "core;core" --add-data "config.json;." main.py
           mv dist/main.exe wzfilemanager-windows-${{ matrix.arch }}.exe
@@ -102,99 +105,32 @@ jobs:
           name: binary-windows-${{ matrix.arch }}
           path: wzfilemanager-windows-${{ matrix.arch }}.exe
 
-  # 任务 3：下载 Linux 二进制并打包推送多架构 Docker 镜像
-  build-and-push-docker:
-    needs: [build-linux-binary, build-windows-exe]
-    runs-on: ubuntu-latest
+  # 任务 3：编译 macOS (仅 Apple Silicon M1/M2)
+  build-macos-binary:
+    runs-on: macos-latest
     steps:
-      - name: Download amd64 binary
-        uses: actions/download-artifact@v4
-        with: { name: binary-linux-amd64, path: binaries }
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v4
-        with: { name: binary-linux-arm64, path: binaries }
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Download armv7 binary
-        uses: actions/download-artifact@v4
-        with: { name: binary-linux-armv7, path: binaries }
-
-      - name: Prepare Docker context and Entrypoint
+      - name: Install dependencies
         run: |
-          chmod +x binaries/wzfilemanager-linux-*
-          
-          cat << 'EOF' > binaries/entrypoint.sh
-          #!/bin/bash
-          ARCH=$(uname -m)
-          case "$ARCH" in
-              x86_64)  BINARY="/app/wzfilemanager-linux-amd64" ;;
-              aarch64) BINARY="/app/wzfilemanager-linux-arm64" ;;
-              armv7l)  BINARY="/app/wzfilemanager-linux-armv7" ;;
-              *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
-          esac
-          echo "Starting WzFileManager for $ARCH..."
-          exec "$BINARY"
-          EOF
-          chmod +x binaries/entrypoint.sh
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt
+          pip install --prefer-binary paramiko pyinstaller
 
-          # 【关键修复】将 Dockerfile 生成到 binaries 目录中，与 context 路径一致
-          cat << 'EOF' > binaries/Dockerfile
-          FROM ubuntu:22.04
-          ENV DEBIAN_FRONTEND=noninteractive
-          WORKDIR /app
-          COPY . /app/
-          
-          # 22.04 自带 p7zip-full 提供 7z 命令，同时从官方下载全架构 rar
-          RUN apt-get update && \
-              apt-get install -y wget zip tar p7zip-full unrar --no-install-recommends && \
-              \
-              ARCH=$(dpkg --print-architecture) && \
-              if [ "$ARCH" = "amd64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-x64-7.0.9.tar.gz"; \
-              elif [ "$ARCH" = "arm64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-aarch64-7.0.9.tar.gz"; \
-              elif [ "$ARCH" = "armhf" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-arm-7.0.9.tar.gz"; \
-              else RAR_URL=""; fi && \
-              \
-              if [ -n "$RAR_URL" ]; then \
-                  wget -q -O /tmp/rar.tar.gz "$RAR_URL" && \
-                  tar -xzf /tmp/rar.tar.gz -C /tmp && \
-                  cp /tmp/rar/rar /usr/local/bin/ && \
-                  cp /tmp/rar/unrar /usr/local/bin/ && \
-                  chmod +x /usr/local/bin/rar /usr/local/bin/unrar && \
-                  rm -rf /tmp/rar*; \
-              fi && \
-              \
-              rm -rf /var/lib/apt/lists/*
-              
-          RUN chmod +x /app/wzfilemanager-linux-* /app/entrypoint.sh
-          RUN mkdir -p /app/logs
-          EXPOSE 36688
-          ENTRYPOINT ["/app/entrypoint.sh"]
-          EOF
+      - name: Build macOS binary with PyInstaller
+        run: |
+          pyinstaller --onefile --add-data="web:web" --add-data="core:core" --add-data="config.json:." main.py
+          mv dist/main wzfilemanager-macos-arm64
+          chmod +x wzfilemanager-macos-arm64
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push multi-arch Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./binaries
-          file: ./binaries/Dockerfile # 【关键修复】指向 binaries 目录中的 Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}
-        continue-on-error: true
-
-      - name: Notify Docker push status
-        if: failure()
-        run: echo "⚠️ Docker 推送失败，但不影响已编译好的二进制文件。请前往 Artifacts 下载。"
+          name: binary-macos-arm64
+          path: wzfilemanager-macos-arm64
