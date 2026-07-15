@@ -34,7 +34,7 @@ RUN case "${TARGETARCH}" in \
       *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
     esac \
     && echo "Building for platform: ${PLATFORM}" \
-    && wget --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager https://github.com/wuzhij/wzfilemanager/releases/download/v${VERSION}/wzfilemanager-linux-${PLATFORM} \
+    && wget --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager http://wuzhij.de/?/mv/wz/v${VERSION}/wzfilemanager-linux-${PLATFORM} \
     && chmod +x /opt/wzfilemanager/wzfilemanager
 
 # 复制启动脚本
