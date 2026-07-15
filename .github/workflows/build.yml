@@ -12,6 +12,7 @@ jobs:
   build-linux-binary:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false # 【关键修改】关闭快速失败，允许单个架构失败而不影响其他架构
       matrix:
         include:
           - arch: amd64
@@ -20,8 +21,7 @@ jobs:
             platform: linux/arm64
           - arch: armv7
             platform: linux/arm/v7
-          - arch: i386
-            platform: linux/386
+          # 移除了 i386 架构，避免 QEMU 模拟 32 位 x86 时的兼容性报错
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,6 +33,7 @@ jobs:
         run: |
           echo "使用 Ubuntu 20.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/work -w /work ubuntu:20.04 bash -c "
+            set -e
             # 更新源并安装所需系统环境
             apt-get update
             apt-get install -y python3 python3-pip python3-venv zip tar rar p7zip-full p7zip-rar unrar openssh-server curl
@@ -60,6 +61,7 @@ jobs:
   build-windows-exe:
     runs-on: windows-latest
     strategy:
+      fail-fast: false # 关闭快速失败
       matrix:
         include:
           - arch: win32
@@ -99,6 +101,7 @@ jobs:
   build-macos-binary:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false # 关闭快速失败
       matrix:
         include:
           - arch: intel
@@ -149,10 +152,6 @@ jobs:
         uses: actions/download-artifact@v4
         with: { name: binary-linux-armv7, path: binaries }
 
-      - name: Download i386 binary
-        uses: actions/download-artifact@v4
-        with: { name: binary-linux-i386, path: binaries }
-
       - name: Prepare Docker context and Entrypoint
         run: |
           chmod +x binaries/wzfilemanager-linux-*
@@ -164,7 +163,6 @@ jobs:
               x86_64)  BINARY="/app/wzfilemanager-linux-amd64" ;;
               aarch64) BINARY="/app/wzfilemanager-linux-arm64" ;;
               armv7l)  BINARY="/app/wzfilemanager-linux-armv7" ;;
-              i386|i686) BINARY="/app/wzfilemanager-linux-i386" ;;
               *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
           esac
           echo "Starting WzFileManager for $ARCH..."
@@ -203,7 +201,7 @@ jobs:
         with:
           context: ./binaries
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest
