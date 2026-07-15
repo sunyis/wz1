@@ -34,9 +34,16 @@ jobs:
           echo "使用 Ubuntu 20.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/work -w /work ubuntu:20.04 bash -c "
             set -e
-            # 更新源并安装所需系统环境 (移除了不被 arm 支持的 rar 包)
+            # 更新源并安装所需系统环境
             apt-get update
-            apt-get install -y python3 python3-pip python3-venv zip tar unrar p7zip-full p7zip-rar openssh-server curl
+            
+            # 【修改】仅 amd64 架构安装 rar 包
+            RAR_PKG=''
+            if [ '${{ matrix.arch }}' = 'amd64' ]; then
+              RAR_PKG='rar'
+            fi
+            
+            apt-get install -y python3 python3-pip python3-venv zip tar unrar p7zip-full p7zip-rar openssh-server curl \$RAR_PKG
             
             # 安装 Python 依赖 (加入 --prefer-binary 优先下载预编译包，加速安装)
             pip3 install --upgrade pip
@@ -177,8 +184,15 @@ jobs:
           ENV DEBIAN_FRONTEND=noninteractive
           WORKDIR /app
           COPY . /app/
-          # 安装项目所需的所有系统级压缩工具 (移除了不被 arm 支持的 rar 包)
-          RUN apt-get update && apt-get install -y zip tar unrar p7zip-full p7zip-rar --no-install-recommends && rm -rf /var/lib/apt/lists/*
+          
+          # 【修改】Docker多架构构建：仅 amd64 架构安装 rar 包
+          RUN apt-get update && \
+              if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+                  apt-get install -y rar; \
+              fi && \
+              apt-get install -y zip tar unrar p7zip-full p7zip-rar --no-install-recommends && \
+              rm -rf /var/lib/apt/lists/*
+              
           RUN chmod +x /app/wzfilemanager-linux-* /app/entrypoint.sh
           RUN mkdir -p /app/logs
           EXPOSE 36688
