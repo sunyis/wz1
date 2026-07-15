@@ -12,7 +12,7 @@ jobs:
   build-linux-binary:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # 【关键修改】关闭快速失败，允许单个架构失败而不影响其他架构
+      fail-fast: false # 关闭快速失败，允许单个架构失败而不影响其他架构
       matrix:
         include:
           - arch: amd64
@@ -21,7 +21,6 @@ jobs:
             platform: linux/arm64
           - arch: armv7
             platform: linux/arm/v7
-          # 移除了 i386 架构，避免 QEMU 模拟 32 位 x86 时的兼容性报错
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,18 +29,19 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Compile binary in Ubuntu 20.04
+        timeout-minutes: 30 # 防止 QEMU 模拟下载过慢被取消
         run: |
           echo "使用 Ubuntu 20.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/work -w /work ubuntu:20.04 bash -c "
             set -e
-            # 更新源并安装所需系统环境
+            # 更新源并安装所需系统环境 (移除了不被 arm 支持的 rar 包)
             apt-get update
-            apt-get install -y python3 python3-pip python3-venv zip tar rar p7zip-full p7zip-rar unrar openssh-server curl
+            apt-get install -y python3 python3-pip python3-venv zip tar unrar p7zip-full p7zip-rar openssh-server curl
             
-            # 安装 Python 依赖
+            # 安装 Python 依赖 (加入 --prefer-binary 优先下载预编译包，加速安装)
             pip3 install --upgrade pip
-            pip3 install -r requirements.txt
-            pip3 install paramiko pyinstaller
+            pip3 install --prefer-binary -r requirements.txt
+            pip3 install --prefer-binary paramiko pyinstaller
             
             # 打包为单文件二进制 (将 web, core 和 config.json 打包进去)
             pyinstaller --onefile --add-data 'web:web' --add-data 'core:core' --add-data 'config.json:.' main.py
@@ -61,7 +61,7 @@ jobs:
   build-windows-exe:
     runs-on: windows-latest
     strategy:
-      fail-fast: false # 关闭快速失败
+      fail-fast: false
       matrix:
         include:
           - arch: win32
@@ -82,8 +82,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install paramiko pyinstaller
+          pip install --prefer-binary -r requirements.txt
+          pip install --prefer-binary paramiko pyinstaller
 
       - name: Build .exe with PyInstaller
         # 注意：Windows 环境下 PyInstaller 的 --add-data 分隔符是分号 ';' 而不是冒号 ':'
@@ -101,7 +101,7 @@ jobs:
   build-macos-binary:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # 关闭快速失败
+      fail-fast: false
       matrix:
         include:
           - arch: intel
@@ -112,7 +112,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 【修改】升级到 Python 3.11，获取最佳的 macOS 预编译包支持，避免源码编译卡死
+      # 升级到 Python 3.11，获取最佳的 macOS 预编译包支持，避免源码编译卡死
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -121,7 +121,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 设置 pip 超时限制，防止卡死；优先使用预编译包
           pip install --prefer-binary -r requirements.txt
           pip install --prefer-binary paramiko pyinstaller
 
@@ -178,8 +177,8 @@ jobs:
           ENV DEBIAN_FRONTEND=noninteractive
           WORKDIR /app
           COPY . /app/
-          # 安装项目所需的所有系统级压缩工具
-          RUN apt-get update && apt-get install -y zip tar rar unrar p7zip-full p7zip-rar --no-install-recommends && rm -rf /var/lib/apt/lists/*
+          # 安装项目所需的所有系统级压缩工具 (移除了不被 arm 支持的 rar 包)
+          RUN apt-get update && apt-get install -y zip tar unrar p7zip-full p7zip-rar --no-install-recommends && rm -rf /var/lib/apt/lists/*
           RUN chmod +x /app/wzfilemanager-linux-* /app/entrypoint.sh
           RUN mkdir -p /app/logs
           EXPOSE 36688
