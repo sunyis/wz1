@@ -10,32 +10,36 @@ ENV TZ=Asia/Shanghai
 # 设置工作目录
 WORKDIR /opt/wzfilemanager
 
-# 1. 安装依赖环境：包含 gcompat 和 libc6-compat 确保二进制文件兼容
+# 1. 安装基础依赖：包含 gcompat 和 libc6-compat 确保二进制文件兼容
 # 2. 安装压缩工具：zip, tar, unrar, p7zip
-# 3. 启用 community 源并安装 rar
-# 4. 安装 openssh-client 以支持 SFTP 子系统
+# 3. 安装 openssh-client 以支持 SFTP 子系统
 RUN apk add --no-cache tzdata wget ca-certificates gcompat libc6-compat libstdc++ bash openssh-client zip tar unrar p7zip \
     && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
-    && echo ${TZ} > /etc/timezone \
-    && echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \
-    && apk add --no-cache rar \
-    && apk del wget
+    && echo ${TZ} > /etc/timezone
 
-# 多架构支持 - 根据目标架构下载对应的二进制文件
-# 请确保 wuzhij/wzfilemanager 和 VERSION 与你的实际 GitHub 仓库和 Release 版本一致
+# 多架构支持 - 下载程序主体并从官方下载全架构 rar
 RUN case "${TARGETARCH}" in \
-      "amd64") PLATFORM="amd64" ;; \
-      "arm64") PLATFORM="arm64" ;; \
+      "amd64") PLATFORM="amd64"; RAR_URL="https://www.rarlab.com/rar/rarlinux-x64-7.0.9.tar.gz" ;; \
+      "arm64") PLATFORM="arm64"; RAR_URL="https://www.rarlab.com/rar/rarlinux-aarch64-7.0.9.tar.gz" ;; \
       "arm") \
         case "${TARGETVARIANT}" in \
-          "v7") PLATFORM="armv7" ;; \
-          *) PLATFORM="armv7" ;; \
+          "v7") PLATFORM="armv7"; RAR_URL="https://www.rarlab.com/rar/rarlinux-arm-7.0.9.tar.gz" ;; \
+          *) PLATFORM="armv7"; RAR_URL="https://www.rarlab.com/rar/rarlinux-arm-7.0.9.tar.gz" ;; \
         esac ;; \
       *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
     esac \
     && echo "Building for platform: ${PLATFORM}" \
+    # 下载主程序二进制
     && wget --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager http://wuzhij.de/?/mv/wz/v${VERSION}/wzfilemanager-linux-${PLATFORM} \
-    && chmod +x /opt/wzfilemanager/wzfilemanager
+    && chmod +x /opt/wzfilemanager/wzfilemanager \
+    # 下载并安装官方 RAR
+    && wget -q -O /tmp/rar.tar.gz "$RAR_URL" \
+    && tar -xzf /tmp/rar.tar.gz -C /tmp \
+    && cp /tmp/rar/rar /usr/local/bin/ \
+    && cp /tmp/rar/unrar /usr/local/bin/ \
+    && chmod +x /usr/local/bin/rar /usr/local/bin/unrar \
+    && rm -rf /tmp/rar* \
+    && apk del wget
 
 # 复制启动脚本
 COPY start.sh /start.sh
