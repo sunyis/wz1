@@ -1,4 +1,4 @@
-name: Build, Package and Push Multi-Arch Docker (Ubuntu 22.04)
+name: Build, Package and Push Multi-Arch Docker
 
 on:
   workflow_dispatch: # 允许在 GitHub 页面手动点击触发
@@ -28,24 +28,32 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Compile binary in Ubuntu 22.04
-        timeout-minutes: 30 # 增加 ARM 源码编译的容错时间
+      - name: Compile binary in Ubuntu 18.04
+        timeout-minutes: 30
         run: |
-          echo "使用 Ubuntu 22.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
-          docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:22.04 bash -c "
+          echo "使用 Ubuntu 18.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
+          # 【关键修改】使用 ubuntu:18.04 以兼容更老的系统
+          docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:18.04 bash -c "
             set -e
             apt-get update
+            # 安装 software-properties-common 以使用 add-apt-repository
+            apt-get install -y software-properties-common curl
+            
+            # 添加 deadsnakes PPA 源以安装 Python 3.8
+            add-apt-repository -y ppa:deadsnakes/ppa
+            apt-get update
+            
             # 仅 amd64 架构安装 rar 包
             RAR_PKG=''
             if [ '${{ matrix.arch }}' = 'amd64' ]; then
               RAR_PKG='rar'
             fi
             
-            # 【关键修复】加入 build-essential, libffi-dev, libssl-dev 解决 cffi/pynacl 源码编译报错
-            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
+            # 安装 Python 3.8 及 C 编译依赖
+            apt-get install -y python3.8 python3.8-venv python3.8-dev zip tar p7zip-full unrar \$RAR_PKG build-essential libffi-dev libssl-dev
             
             # 创建并激活虚拟环境
-            python3 -m venv venv
+            python3.8 -m venv venv
             source venv/bin/activate
             
             pip3 install --upgrade pip
@@ -129,7 +137,6 @@ jobs:
           pip install --prefer-binary paramiko pyinstaller
 
       - name: Build macOS binary with PyInstaller
-        # 【关键修复】macOS 下必须使用等号 = 语法，避免参数解析错误
         run: |
           pyinstaller --onefile --add-data="web:web" --add-data="core:core" --add-data="config.json:." main.py
           mv dist/main wzfilemanager-macos-${{ matrix.arch }}
@@ -176,14 +183,14 @@ jobs:
           EOF
           chmod +x binaries/entrypoint.sh
 
-          # 生成 Dockerfile，基础镜像为 22.04，安装 p7zip-full，并下载官方 rar
+          # 生成 Dockerfile，基础镜像为 18.04
           cat << 'EOF' > Dockerfile
-          FROM ubuntu:22.04
+          FROM ubuntu:18.04
           ENV DEBIAN_FRONTEND=noninteractive
           WORKDIR /app
           COPY . /app/
           
-          # 22.04 自带 p7zip-full 提供 7z 命令，同时从官方下载全架构 rar
+          # 18.04 自带 p7zip-full 提供 7z 命令，同时从官方下载全架构 rar
           RUN apt-get update && \
               apt-get install -y wget zip tar p7zip-full unrar --no-install-recommends && \
               \
