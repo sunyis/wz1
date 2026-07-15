@@ -14,7 +14,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 【关键修复】判断是否为 PyInstaller 打包环境，动态获取资源绝对路径
+if getattr(sys, 'frozen', False):
+    # 如果是 PyInstaller 打包的二进制运行，资源会被解压到 sys._MEIPASS
+    BASE_DIR = sys._MEIPASS
+    # 运行目录（用于存放 config.json 和 logs）
+    RUN_DIR = os.path.dirname(sys.executable)
+else:
+    # 如果是源码运行，使用当前目录
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    RUN_DIR = BASE_DIR
+
+sys.path.insert(0, BASE_DIR)
 
 from core.config import ConfigManager
 from core.auth import AuthManager
@@ -23,31 +34,33 @@ from core.port_detector import PortDetector
 from core.ssh_manager import SSHManager
 from core.file_ops import FileManager
 
+# 【修复 Errno 2】确保所有必需目录在启动前自动创建
+log_dir = os.path.join(RUN_DIR, "logs")
+Path(log_dir).mkdir(parents=True, exist_ok=True)
+Path(os.path.join(BASE_DIR, "web/static/css")).mkdir(parents=True, exist_ok=True)
+Path(os.path.join(BASE_DIR, "web/static/js")).mkdir(parents=True, exist_ok=True)
+Path(os.path.join(BASE_DIR, "web/templates")).mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/app.log", encoding='utf-8')
+        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
 
-# 【修复 Errno 2】确保所有必需目录在启动前自动创建
-Path("logs").mkdir(parents=True, exist_ok=True)
-Path("web/static/css").mkdir(parents=True, exist_ok=True)
-Path("web/static/js").mkdir(parents=True, exist_ok=True)
-Path("web/templates").mkdir(parents=True, exist_ok=True)
-
-config = ConfigManager("config.json")
+config = ConfigManager(os.path.join(RUN_DIR, "config.json"))
 auth = AuthManager(config)
 ssh = SSHManager(config)
 file_manager = FileManager(ssh)
 
 app = FastAPI(title="WzFileManager", version="1.0.0")
 
-app.mount("/static", StaticFiles(directory="web/static"), name="static")
-templates = Jinja2Templates(directory="web/templates")
+# 使用前面计算好的绝对路径挂载静态文件和模板
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "web/static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "web/templates"))
 
 
 @app.middleware("http")
