@@ -7,15 +7,22 @@ ARG TARGETVARIANT
 ENV VERSION=1.0.0
 ENV TZ=Asia/Shanghai
 
-WORKDIR /opt
+# 设置工作目录
+WORKDIR /opt/wzfilemanager
 
-# 安装依赖环境，包含 gcompat 和 libc6-compat 以确保 PyInstaller 二进制文件兼容
-RUN apk add --no-cache tzdata wget ca-certificates gcompat libc6-compat libstdc++ bash \
+# 1. 安装依赖环境：包含 gcompat 和 libc6-compat 确保二进制文件兼容
+# 2. 安装压缩工具：zip, tar, unrar, p7zip
+# 3. 启用 community 源并安装 rar
+# 4. 安装 openssh-client 以支持 SFTP 子系统
+RUN apk add --no-cache tzdata wget ca-certificates gcompat libc6-compat libstdc++ bash openssh-client zip tar unrar p7zip \
     && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
-    && echo ${TZ} > /etc/timezone
+    && echo ${TZ} > /etc/timezone \
+    && echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \
+    && apk add --no-cache rar \
+    && apk del wget
 
 # 多架构支持 - 根据目标架构下载对应的二进制文件
-# 注意：请将 wuzhij/wzfilemanager 替换为你的实际 GitHub 仓库地址
+# 请确保 wuzhij/wzfilemanager 和 VERSION 与你的实际 GitHub 仓库和 Release 版本一致
 RUN case "${TARGETARCH}" in \
       "amd64") PLATFORM="amd64" ;; \
       "arm64") PLATFORM="arm64" ;; \
@@ -27,17 +34,14 @@ RUN case "${TARGETARCH}" in \
       *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
     esac \
     && echo "Building for platform: ${PLATFORM}" \
-    && wget --no-check-certificate -q -O /opt/wzfilemanager https://github.com/wuzhij/wzfilemanager/releases/download/v${VERSION}/wzfilemanager-linux-${PLATFORM} \
-    && chmod +x /opt/wzfilemanager \
-    && apk del wget
-
-# 创建数据目录
-RUN mkdir -p /opt/data
+    && wget --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager https://github.com/wuzhij/wzfilemanager/releases/download/v${VERSION}/wzfilemanager-linux-${PLATFORM} \
+    && chmod +x /opt/wzfilemanager/wzfilemanager
 
 # 复制启动脚本
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 EXPOSE 36688
-VOLUME ["/opt/data"]
+# 声明挂载点，config.json 和日志将存放在此
+VOLUME ["/opt/wzfilemanager/data"]
 CMD ["/start.sh"]
