@@ -29,18 +29,20 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Compile binary in Ubuntu 22.04
-        timeout-minutes: 20
+        timeout-minutes: 30 # 增加 ARM 源码编译的容错时间
         run: |
           echo "使用 Ubuntu 22.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:22.04 bash -c "
             set -e
             apt-get update
-            # 安装 python 环境及压缩工具(仅用于环境完整性)
+            # 仅 amd64 架构安装 rar 包
             RAR_PKG=''
             if [ '${{ matrix.arch }}' = 'amd64' ]; then
               RAR_PKG='rar'
             fi
-            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl
+            
+            # 【关键修复】加入 build-essential, libffi-dev, libssl-dev 解决 cffi/pynacl 源码编译报错
+            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
             
             # 创建并激活虚拟环境
             python3 -m venv venv
@@ -127,8 +129,9 @@ jobs:
           pip install --prefer-binary paramiko pyinstaller
 
       - name: Build macOS binary with PyInstaller
+        # 【关键修复】macOS 下必须使用等号 = 语法，避免参数解析错误
         run: |
-          pyinstaller --onefile --add-data "web:web" --add-data "core:core" --add-data "config.json;." main.py
+          pyinstaller --onefile --add-data="web:web" --add-data="core:core" --add-data="config.json:." main.py
           mv dist/main wzfilemanager-macos-${{ matrix.arch }}
           chmod +x wzfilemanager-macos-${{ matrix.arch }}
 
