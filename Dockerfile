@@ -36,7 +36,7 @@ RUN case "${TARGETARCH}" in \
     esac \
     && echo "Building for platform: ${PLATFORM}" \
     # 使用自定义地址下载主程序，URL拼接 .bin 后缀，先保存为 wzfilemanager.bin
-    && wget --tries=3 --timeout=30 --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager.bin "http://www.wztv.zone.id/v${VERSION}/wzfilemanager-linux-${PLATFORM}.bin" \
+    && wget --tries=3 --timeout=30 --no-check-certificate -q -O /opt/wzfilemanager/wzfilemanager.bin "http://www.wztv.zone.id/v${VERSION}/wzfilemanager-linux-${PLATFORM}" \
     # 重命名为 wzfilemanager 并赋予执行权限
     && mv /opt/wzfilemanager/wzfilemanager.bin /opt/wzfilemanager/wzfilemanager \
     && chmod +x /opt/wzfilemanager/wzfilemanager
