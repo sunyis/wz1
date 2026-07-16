@@ -147,6 +147,10 @@ jobs:
           - arch: armv7
             platform: linux/arm/v7
     steps:
+      # 【必须新增】拉取仓库代码，以便获取根目录的 start.sh
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download binary artifact
         uses: actions/download-artifact@v4
         with:
@@ -161,12 +165,27 @@ jobs:
           ENV DEBIAN_FRONTEND=noninteractive
           WORKDIR /opt/wzfilemanager
 
+          # 安装 p7zip-full (提供 7z)，从官方下载全架构 rar/unrar
           RUN apt-get update && \
               apt-get install -y --no-install-recommends \
-              zip tar p7zip-full unrar openssh-client bash tzdata && \
-              if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-                  apt-get install -y --no-install-recommends rar; \
+              wget zip tar p7zip-full openssh-client bash tzdata && \
+              \
+              ARCH=$(dpkg --print-architecture) && \
+              if [ "$ARCH" = "amd64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-x64-7.0.9.tar.gz"; \
+              elif [ "$ARCH" = "arm64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-aarch64-7.0.9.tar.gz"; \
+              elif [ "$ARCH" = "armhf" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-arm-7.0.9.tar.gz"; \
+              else RAR_URL=""; fi && \
+              \
+              if [ -n "$RAR_URL" ]; then \
+                  wget -q -O /tmp/rar.tar.gz "$RAR_URL" && \
+                  tar -xzf /tmp/rar.tar.gz -C /tmp && \
+                  cp /tmp/rar/rar /usr/local/bin/ && \
+                  cp /tmp/rar/unrar /usr/local/bin/ && \
+                  chmod +x /usr/local/bin/rar /usr/local/bin/unrar && \
+                  rm -rf /tmp/rar*; \
               fi && \
+              \
+              apt-get purge -y --auto-remove wget && \
               rm -rf /var/lib/apt/lists/* && \
               ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
               echo ${TZ} > /etc/timezone
@@ -182,24 +201,8 @@ jobs:
           CMD ["/start.sh"]
           EOF
 
-          cat << 'EOF' > binaries/start.sh
-          #!/bin/bash
-          APP_DIR="/opt/wzfilemanager"
-          DATA_DIR="$APP_DIR/data"
-          BINARY="$APP_DIR/wzfilemanager"
-
-          mkdir -p "$DATA_DIR/logs"
-
-          if [ ! -f "$DATA_DIR/config.json" ]; then
-            echo '{"server":{"host":"0.0.0.0","port":36688,"port_range":[30000,55000]},"auth":{"password":"admin123","session_timeout":2592000,"max_attempts":5,"lock_minutes":30},"ssh":{"port":22,"username":"root","auth_type":"password","password":"","key_path":"","key_password":""},"security":{"allowed_ips":[],"https":false},"logging":{"level":"INFO","file":"logs/app.log"}}' > "$DATA_DIR/config.json"
-          fi
-
-          ln -sfn "$DATA_DIR/config.json" "$APP_DIR/config.json"
-          ln -sfn "$DATA_DIR/logs" "$APP_DIR/logs"
-
-          echo "Starting WzFileManager..."
-          exec "$BINARY"
-          EOF
+          # 直接将仓库根目录的 start.sh 复制到 binaries 目录，供 Docker 打包使用
+          cp start.sh binaries/start.sh
           chmod +x binaries/start.sh
 
       - name: Set up QEMU
@@ -248,3 +251,4 @@ jobs:
           ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-arm64 \
           ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-armv7
         continue-on-error: true
+
