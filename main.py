@@ -51,8 +51,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 解析 config.json 的真实目录（如果是软链接会解析到源文件目录，如 Docker 中的 data 目录）
 config_path = os.path.join(RUN_DIR, "config.json")
+config = ConfigManager(config_path)
+auth = AuthManager(config)
+ssh = SSHManager(config)
+
+# 获取 config.json 所在的真实目录（如果是软链接会解析到源文件目录，如 Docker 中的 data 目录）
 real_config_dir = os.path.dirname(os.path.realpath(config_path))
 file_manager = FileManager(ssh, real_config_dir)
 
@@ -456,6 +460,21 @@ async def startup_event():
         while True:
             await asyncio.sleep(300)
             auth.cleanup_expired()
+            
+            # 【新增】检查日志文件大小，超过 1MB 则只保留最新 50 行
+            log_file_path = os.path.join(log_dir, "app.log")
+            try:
+                if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 1 * 1024 * 1024:
+                    with open(log_file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                    # 保留最后 50 行
+                    last_50_lines = lines[-50:]
+                    with open(log_file_path, 'w', encoding='utf-8') as f:
+                        f.writelines(last_50_lines)
+                    logger.info("日志文件超过 1MB，已自动清理并保留最新 50 行")
+            except Exception as e:
+                pass # 防止日志清理失败导致主循环崩溃
+
     asyncio.create_task(cleanup_loop())
 
 @app.on_event("shutdown")
