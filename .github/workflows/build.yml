@@ -177,7 +177,7 @@ jobs:
               else RAR_URL=""; fi && \
               \
               if [ -n "$RAR_URL" ]; then \
-                  wget -q -O /tmp/rar.tar.gz "$RAR_URL" && \
+                  wget --no-check-certificate -q -O /tmp/rar.tar.gz "$RAR_URL" && \
                   tar -xzf /tmp/rar.tar.gz -C /tmp && \
                   cp /tmp/rar/rar /usr/local/bin/ && \
                   cp /tmp/rar/unrar /usr/local/bin/ && \
