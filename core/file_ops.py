@@ -566,7 +566,8 @@ class FileManager:
         ok, out, err = self.ssh.execute(cmd)
         if ok:
             return {"success": True, "msg": "压缩成功", "path": output}
-        return {"success": False, "msg": err or "压缩失败"}
+        # 【关键修改】调用 _translate_error 翻译错误信息
+        return {"success": False, "msg": self._translate_error(err or "压缩失败")}
 
     def extract(self, file_path: str, target_dir: str = None) -> Dict[str, Any]:
         file_path = self._normalize_path(file_path)
@@ -597,7 +598,8 @@ class FileManager:
         ok, out, err = self.ssh.execute(cmd)
         if ok:
             return {"success": True, "msg": "解压成功"}
-        return {"success": False, "msg": err or "解压失败"}
+        # 【关键修改】调用 _translate_error 翻译错误信息
+        return {"success": False, "msg": self._translate_error(err or "解压失败")}
 
     def _format_permissions(self, mode: int) -> str:
         perms = ""
