@@ -51,10 +51,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-config = ConfigManager(os.path.join(RUN_DIR, "config.json"))
-auth = AuthManager(config)
-ssh = SSHManager(config)
-file_manager = FileManager(ssh)
+# 解析 config.json 的真实目录（如果是软链接会解析到源文件目录，如 Docker 中的 data 目录）
+config_path = os.path.join(RUN_DIR, "config.json")
+real_config_dir = os.path.dirname(os.path.realpath(config_path))
+file_manager = FileManager(ssh, real_config_dir)
 
 app = FastAPI(title="WzFileManager", version="1.0.0")
 
