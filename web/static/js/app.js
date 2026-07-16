@@ -16,7 +16,7 @@ var globalFavorites = [];
 var trashEnabled = true; // 回收站状态，默认开启
 
 // ====== 初始化 ======
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     // 从 URL Hash 中恢复上次的路径，解决刷新丢失目录的问题
     var initialPath = '/';
     if (window.location.hash) {
@@ -25,7 +25,43 @@ document.addEventListener('DOMContentLoaded', function() {
             initialPath = hashPath;
         }
     }
-    loadFileList(initialPath);
+    currentPath = fixPath(initialPath);
+    
+    var newHash = '#' + encodeURIComponent(currentPath);
+    if (window.location.hash !== newHash) {
+        window.location.hash = newHash;
+    }
+    
+    var pathInput = document.getElementById('pathInput');
+    if (pathInput) pathInput.value = currentPath;
+    
+    var tbody = document.getElementById('fileTableBody');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="6" class="loading">检查 SSH 状态...</td></tr>';
+    }
+
+    // 【新增】检查是否已配置 SSH 密码或密钥
+    try {
+        var sshResp = await fetch('/api/ssh/status');
+        var sshInfo = await sshResp.json();
+        
+        if (sshInfo.configured || sshInfo.connected) {
+            // 已配置密码/密钥，或者已经连上了，正常加载文件列表
+            loadFileList(currentPath);
+        } else {
+            // 未配置密码和密钥，提示用户去配置
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:#ff4d4f;">未配置SSH,请点击右上角设置图标添加SSH配置，已配置时请重新启动</td></tr>';
+            }
+            renderBreadcrumb(currentPath);
+            updateStatus('请配置 SSH 连接');
+        }
+    } catch (err) {
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:red;">初始化失败</td></tr>';
+        }
+    }
+
     checkSSHStatus();
     loadDiskUsage();
     loadFavorites();
@@ -639,20 +675,20 @@ function editFile(path) {
                     else if (['c', 'cpp', 'java'].indexOf(ext) !== -1) mode = "clike";
 
                     editor = CodeMirror.fromTextArea(textarea, { 
-                        lineNumbers: true, 
-                        mode: mode, 
-                        matchBrackets: true, 
-                        indentUnit: 4, 
-                        lineWrapping: true,
-                        inputStyle: "textarea" // 【新增】提升手机端原生选择和输入体验
-                    });
-                    
-                    setTimeout(function() {
-                        if (editor) {
-                            editor.refresh();
-                            editor.focus();
-                        }
-                    }, 50);
+                    lineNumbers: true, 
+                    mode: mode, 
+                    matchBrackets: true, 
+                    indentUnit: 4, 
+                    lineWrapping: true,
+                    autofocus: false // 【新增】明确禁止自动聚焦
+                });
+                
+                // 【关键修复】延迟刷新编辑器，确保模态框动画结束后编辑器尺寸正确
+                setTimeout(function() {
+                    if (editor) {
+                        editor.refresh();
+                        // 移除 editor.focus()，只有用户点击文本时才出现光标
+                    }
                 }, 100);
             } else { 
                 showAlert(data.msg); 
@@ -2128,7 +2164,7 @@ function renderAnalyzeList(items) {
         if (!item.is_dir) {
             actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); editAnalyzeItem(\'' + item.path + '\')">编辑</button>';
         }
-        actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); copyAnalyzePath(\'' + item.path + '\', this)">复制</button>';
+        actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); copyAnalyzePath(\'' + item.path + '\', this)">复制路径</button>';
         actionsHtml += '<button class="action-btn danger" onclick="event.stopPropagation(); deleteAnalyzeItem(\'' + item.path + '\')">删除</button>';
         
         tr.innerHTML = '<td class="col-checkbox"><input type="checkbox"></td>' +
