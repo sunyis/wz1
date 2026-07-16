@@ -23,6 +23,17 @@ class FileManager:
             return "权限不足，拒绝访问"
         if "File exists" in err_msg or "Errno 17" in err_msg:
             return "文件已存在"
+        # 命令不存在的错误翻译
+        if "7z: command not found" in err_msg:
+            return "服务器未安装 7z，无法操作 7z 格式"
+        if "rar: command not found" in err_msg:
+            return "服务器未安装 rar，无法操作 rar 格式"
+        if "unrar: command not found" in err_msg:
+            return "服务器未安装 unrar，无法解压 rar 格式"
+        if "zip: command not found" in err_msg:
+            return "服务器未安装 zip，无法压缩 zip 格式"
+        if "unzip: command not found" in err_msg:
+            return "服务器未安装 unzip，无法解压 zip 格式"
         return err_msg
 
     def _ensure_sftp(self):
