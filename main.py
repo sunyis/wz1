@@ -128,9 +128,15 @@ async def api_logout(request: Request):
 @app.get("/api/ssh/status")
 async def ssh_status():
     ok, msg = ssh.ensure_connected()
+    # 【新增】检查是否已配置密码或密钥密码
+    is_configured = bool(config.get("ssh", "password") or config.get("ssh", "key_password"))
     return {
-        "success": True, "connected": ok, "message": msg,
-        "host": config.get("ssh", "host"), "port": config.get("ssh", "port"),
+        "success": True, 
+        "connected": ok, 
+        "message": msg,
+        "configured": is_configured,  # 新增字段：是否已配置密码/密钥
+        "host": config.get("ssh", "host"), 
+        "port": config.get("ssh", "port"),
         "username": config.get("ssh", "username")
     }
 
@@ -417,7 +423,25 @@ async def startup_event():
         sys.exit(1)
         
     open_firewall_port(port)
-    public_ip = IPDetector.get_public_ip()
+    
+    # 【新增】自动获取公网 IP 并更新 config.json
+    current_ssh_host = config.get("ssh", "host", default="")
+    public_ip = current_ssh_host
+    
+    if not current_ssh_host or current_ssh_host == "0.0.0.0":
+        logger.info("检测到 SSH Host 未配置 (0.0.0.0)，正在自动获取公网 IP...")
+        detected_ip = IPDetector.get_public_ip()
+        if detected_ip:
+            public_ip = detected_ip
+            # 读取现有配置，更新 host，写回文件，防止覆盖其他 SSH 字段
+            ssh_config = config.get("ssh", default={})
+            ssh_config["host"] = detected_ip
+            config.update("ssh", ssh_config)
+            logger.info(f"✅ 已自动获取公网 IP 并更新至配置文件: {detected_ip}")
+        else:
+            logger.warning("⚠️ 无法获取公网 IP，请在配置文件中手动设置 ssh.host")
+    else:
+        logger.info(f"配置文件中已有 SSH Host ({current_ssh_host})，跳过自动获取。")
     
     logger.info("=" * 60)
     logger.info("WzFileManager 启动成功!")
@@ -437,7 +461,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     ssh.disconnect()
-    logger.info("WzFileManager 已关闭")
+    logger.info("WzFileManager 已停止")
 
 if __name__ == "__main__":
     port = config.get("server", "port")
