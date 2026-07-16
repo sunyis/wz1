@@ -41,7 +41,7 @@ jobs:
             # 启用 universe 和 multiverse 源，确保能装上 p7zip-full 和 rar
             sed -i 's/^# deb/deb/' /etc/apt/sources.list || true
             apt-get update || true
-            sudo timedatectl set-timezone Asia/Shanghai
+            timedatectl set-timezone Asia/Shanghai || true
             # 安装基础环境及压缩工具，全部尝试安装，失败也不中断 (|| true)
             apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar rar curl build-essential libffi-dev libssl-dev || true
             
@@ -169,7 +169,7 @@ jobs:
           RUN sed -i 's/^# deb/deb/' /etc/apt/sources.list || true && \
               apt-get update && \
               apt-get install -y --no-install-recommends \
-              sudo timedatectl set-timezone Asia/Shanghai \
+              timedatectl set-timezone Asia/Shanghai || true \
               apt-get install -y zip tar p7zip-full unrar rar || true \
               wget xz-utils zip tar openssh-client bash tzdata && \
               \
