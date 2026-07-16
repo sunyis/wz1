@@ -196,7 +196,7 @@ function loadFileList(path) {
                 tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:red">' + data.msg + '</td></tr>';
             }
         })
-                .catch(function(err) {
+        .catch(function(err) {
             tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:red">文件管理器已停止, 请重启!</td></tr>';
             document.getElementById('sshStatus').textContent = 'SSH: 服务已断开';
             document.getElementById('sshStatus').classList.add('disconnected');
@@ -560,7 +560,7 @@ function batchAction(action) {
             document.body.appendChild(iframe);
             setTimeout(function() { document.body.removeChild(iframe); }, 60000);
         });
-        } else if (action === 'perm') {
+    } else if (action === 'perm') {
         if (paths.length > 0) {
             showPermModal(paths[0]);
         }
@@ -675,20 +675,21 @@ function editFile(path) {
                     else if (['c', 'cpp', 'java'].indexOf(ext) !== -1) mode = "clike";
 
                     editor = CodeMirror.fromTextArea(textarea, { 
-                    lineNumbers: true, 
-                    mode: mode, 
-                    matchBrackets: true, 
-                    indentUnit: 4, 
-                    lineWrapping: true,
-                    autofocus: false // 【新增】明确禁止自动聚焦
-                });
-                
-                // 【关键修复】延迟刷新编辑器，确保模态框动画结束后编辑器尺寸正确
-                setTimeout(function() {
-                    if (editor) {
-                        editor.refresh();
-                        // 移除 editor.focus()，只有用户点击文本时才出现光标
-                    }
+                        lineNumbers: true, 
+                        mode: mode, 
+                        matchBrackets: true, 
+                        indentUnit: 4, 
+                        lineWrapping: true,
+                        autofocus: false // 【新增】明确禁止自动聚焦
+                    });
+                    
+                    // 【关键修复】延迟刷新编辑器，确保模态框动画结束后编辑器尺寸正确
+                    setTimeout(function() {
+                        if (editor) {
+                            editor.refresh();
+                            // 移除 editor.focus()，只有用户点击文本时才出现光标
+                        }
+                    }, 50);
                 }, 100);
             } else { 
                 showAlert(data.msg); 
@@ -1177,25 +1178,22 @@ function renderPermCheckboxes(mode) {
     // 清除原有的 grid 布局，防止被挤在左侧
     container.className = '';
     container.style.display = 'block';
-    container.style.marginTop = '20px'; // 【修改】往下移一点，改为 20px
+    container.style.marginTop = '20px'; 
     container.style.paddingLeft = '0';
-    container.style.textAlign = 'center'; // 辅助居中
+    container.style.textAlign = 'center'; 
     
     var labels = ['所有者:', '用户组:', '公共:'];
     var perms = ['读', '写', '执行'];
     var bits = [0o400, 0o200, 0o100, 0o40, 0o20, 0o10, 0o4, 0o2, 0o1];
     
-    // 【修改】将 gap 从 10px 改为 20px，让行上下间距大一点
     var html = '<div style="display: inline-flex; flex-direction: column; gap: 20px; align-items: center;">';
     for (var i = 0; i < 3; i++) {
         html += '<div style="display: flex; align-items: center;">';
-        // 第一列：身份标签，宽度 60px，左对齐
         html += '<label style="width: 60px; margin: 0; text-align: left; font-weight: bold; color: #666;">' + labels[i] + '</label>';
         
         for (var j = 0; j < 3; j++) {
             var bit = bits[i * 3 + j];
             var checked = (mode & bit) ? 'checked' : '';
-            // 后三列：权限勾选框，宽度 60px，内部内容居中对齐
             html += '<div style="display: flex; align-items: center; justify-content: center; width: 60px; margin: 0;">';
             html += '<input type="checkbox" data-bit="' + bit + '" ' + checked + ' style="margin: 0 5px 0 0;">' + perms[j];
             html += '</div>';
@@ -1226,16 +1224,12 @@ function updatePermCheckboxes() {
     var permValueEl = document.getElementById('permValue');
     if (!permValueEl) return;
     
-    // 获取输入的值，去掉可能带有的 0o 前缀，并去除空格
     var valStr = permValueEl.value.replace('0o', '').trim();
     
-    // 安全校验：必须是 3-4 位的八进制数字 (0-7)
     if (!/^[0-7]{3,4}$/.test(valStr)) return;
     
-    // 将八进制字符串转为十进制数字
     var mode = parseInt(valStr, 8);
     
-    // 遍历勾选框，根据权限位进行勾选/取消
     var cbs = document.querySelectorAll('#permCheckboxes input[type="checkbox"]');
     for (var i = 0; i < cbs.length; i++) {
         var bit = parseInt(cbs[i].getAttribute('data-bit'));
@@ -1268,7 +1262,7 @@ function setPermission() {
     .then(function(data) {
         if (data.success) {
             closeModal('permModal');
-            refreshList(); // 刷新列表
+            refreshList(); 
             updateStatus('权限/用户组修改成功');
         } else {
             showAlert(data.msg || '修改失败');
@@ -1564,7 +1558,6 @@ function loadTrashFiles() {
                     if (file.filename && file.filename.includes('.')) {
                         file.extension = file.filename.split('.').pop().toLowerCase();
                         // 【关键修复】如果有后缀名，说明是文件，强制修正 is_dir 为 false
-                        // 防止后端回收站机制把文件识别为目录，导致 getFileIcon 直接返回文件夹图标
                         file.is_dir = false; 
                     } else {
                         file.extension = '';
@@ -1596,14 +1589,13 @@ function restoreTrashItem(trash_id) {
     .then(function(resp){ return resp.json(); })
     .then(function(data) {
         if (data.success) { 
-            loadTrashFiles(); // 刷新回收站列表
+            loadTrashFiles(); 
             updateStatus(data.msg);
             
-            // 如果还原的文件在当前浏览的目录下，自动刷新当前浏览的目录
             if (data.target_path) {
                 var targetDir = data.target_path.substring(0, data.target_path.lastIndexOf('/')) || '/';
                 if (fixPath(targetDir) === fixPath(currentPath)) {
-                    refreshList(); // 刷新当前浏览的目录
+                    refreshList(); 
                 }
             }
         } else { 
@@ -1665,13 +1657,13 @@ function toggleTrashEnabled() {
         btn.textContent = '开启回收站';
         btn.classList.add('btn-primary');
         btn.classList.remove('btn-default');
-        trashEnabled = false; // 更新状态为关闭
+        trashEnabled = false; 
         updateStatus('回收站已关闭，后续删除将直接彻底删除');
     } else {
         btn.textContent = '关闭回收站';
         btn.classList.remove('btn-primary');
         btn.classList.add('btn-default');
-        trashEnabled = true; // 更新状态为开启
+        trashEnabled = true; 
         updateStatus('回收站已开启');
     }
 }
@@ -1950,7 +1942,7 @@ function renderSearchResults(data, keyword) {
     var items = data.items || [];
     currentSearchResults = items;
     
-        if (items.length === 0) {
+    if (items.length === 0) {
         info.textContent = '搜索完成';
         tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:#999; padding: 40px 0;"><svg t="1784036340209" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2796" width="40" height="40" style="vertical-align: middle; margin-right: 10px;"><path d="M955.9 928.2L847.6 819.9c-9.1 10.6-18.9 20.4-29.4 29.4l108.3 108.3c8.1 8.1 21.3 8.1 29.4 0 8.2-8.1 8.2-21.2 0-29.4zM541.4 538.9h122.7v-40c-6.8-1-13.7-1.7-20.8-1.7-39.7 0.1-75.6 16-101.9 41.7z" fill="#646464" p-id="2797"></path><path d="M643.3 414.1c-126.4 0-228.9 102.5-228.9 228.9s102.5 228.9 228.9 228.9S872.2 769.4 872.2 643c0-126.5-102.5-228.9-228.9-228.9z m0 416.2C539.8 830.3 456 746.4 456 643c0-103.5 83.9-187.3 187.3-187.3S830.6 539.5 830.6 643c0 103.4-83.9 187.3-187.3 187.3z" fill="#646464" p-id="2798"></path><path d="M809.7 351.5l-6-14.6L546.8 60.2h-403c-46 0-83.3 37.3-83.3 83.3v624.4c0 46 37.3 83.2 83.3 83.2h263.6c11.5 0 20.8-9.3 20.8-20.8s-9.3-20.8-20.8-20.8H143.8c-23 0-41.6-18.6-41.6-41.6V143.5c0-23 18.6-41.6 41.6-41.6h374.6v187.3c0 46 37.3 83.2 83.3 83.2h166.5v38.4c0 11.5 9.3 20.8 20.8 20.8s20.8-9.3 20.8-20.8V351.6l-0.1-0.1z m-208.1-20.7c-23 0-41.6-18.6-41.6-41.6V136.5l182.2 194.4H601.6z" fill="#646464" p-id="2799"></path><path d="M400.9 289.8H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h194.7c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM400.9 414.7H206.2c-11.8 0-21.5-9.6-21.5-21.5s9.6-21.5 21.5-21.5h194.7c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM374.1 539.6H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h167.9c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM360.7 664.4H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h154.5c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM658.1 664.4H503.6c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h154.5c11.8 0 21.5 9.6 21.5 21.5-0.1 11.9-9.7 21.5-21.5 21.5z" fill="#646464" p-id="2800"></path></svg>未搜索到与关键词相关的文件或目录</td></tr>';
         return;
@@ -1965,10 +1957,8 @@ function renderSearchResults(data, keyword) {
         
         var icon = item.is_dir ? '📁' : getFileIcon(item);
         
-        // 统一按钮高度样式，去掉默认的 margin-left 防止换行
         var btnStyle = 'style="height: 28px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; margin-left: 0; margin-right: 5px;"';
         
-        // 按钮顺序：编辑 -> 复制路径 -> 删除
         var actionsHtml = '';
         if (!item.is_dir) {
             actionsHtml += '<button class="action-btn" ' + btnStyle + ' onclick="event.stopPropagation(); editFile(\'' + item.path.replace(/'/g, "\\'") + '\')">编辑</button>';
@@ -1976,17 +1966,14 @@ function renderSearchResults(data, keyword) {
         actionsHtml += '<button class="action-btn" ' + btnStyle + ' onclick="event.stopPropagation(); copyToClipboard(\'' + item.path.replace(/'/g, "\\'") + '\')">复制路径</button>';
         actionsHtml += '<button class="action-btn danger" ' + btnStyle + ' onclick="event.stopPropagation(); deleteSingleSearchItem(\'' + item.path.replace(/'/g, "\\'") + '\')">删除</button>';
         
-        // 名称列：添加 "位置:" 前缀，换行显示
         var nameHtml = '<span class="file-icon">' + icon + '</span><span class="' + (item.is_dir ? 'dir-name' : 'file-name') + '">' + item.name + '</span><br><small style="color:#999; word-break: break-all; display: block; margin-top: 4px;">位置: ' + item.path + '</small>';
                        
-        // 给所有 td 增加 vertical-align: middle; 确保勾选框和文字垂直对齐
         tr.innerHTML = '<td class="col-checkbox" style="vertical-align: middle;"></td>' +
                        '<td style="cursor: pointer; vertical-align: middle;">' + nameHtml + '</td>' +
                        '<td class="col-size" style="vertical-align: middle;">' + (item.is_dir ? '-' : item.size_str) + '</td>' +
                        '<td style="vertical-align: middle;">' + item.mtime_str + '</td>' +
                        '<td class="col-actions" style="white-space: nowrap; vertical-align: middle; text-align: right; padding-right: 30px;">' + actionsHtml + '</td>';
                        
-        // 添加勾选框
         var checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.setAttribute('data-path', item.path);
@@ -2070,8 +2057,8 @@ async function deleteSearchItems() {
             body: JSON.stringify({ path: p, permanent: !trashEnabled })
         });
     }
-    performSearch(); // 刷新搜索结果
-    refreshList(); // 刷新主页
+    performSearch(); 
+    refreshList(); 
 }
 
 // 单个删除
@@ -2102,7 +2089,6 @@ async function showAnalyzeModal() {
 async function loadAnalyzeData(path) {
     currentAnalyzePath = fixPath(path);
     
-    // 渲染面包屑导航
     var breadcrumb = document.getElementById('analyzeBreadcrumb');
     var parts = currentAnalyzePath.split('/').filter(function(p){return p;});
     var html = '<a onclick="loadAnalyzeData(\'/\')" style="cursor:pointer; color: var(--primary); text-decoration: none;">/</a>';
@@ -2134,7 +2120,6 @@ function renderAnalyzeList(items) {
     var tbody = document.getElementById('analyzeTableBody');
     tbody.innerHTML = '';
 
-    // 排序：文件夹优先，然后按大小降序
     items.sort(function(a, b) {
         if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
         return b.size - a.size;
@@ -2212,12 +2197,10 @@ function copyAnalyzePath(path, btn) {
 }
 
 function editAnalyzeItem(path) {
-    // 不关闭分析窗口，直接调用编辑，编辑器会通过 z-index 叠加在上方
     editFile(path);
 }
 
 async function deleteAnalyzeItem(path) {
-    // 使用自定义的美化弹窗进行确认
     var confirmed = await showConfirmModal('确认删除', '确定彻底删除 ' + path.split('/').pop() + ' 吗？');
     if (!confirmed) return;
     
@@ -2226,7 +2209,7 @@ async function deleteAnalyzeItem(path) {
         body: JSON.stringify({ path: path, permanent: !trashEnabled })
     });
     await loadAnalyzeData(currentAnalyzePath);
-    refreshList(); // 刷新主页面
+    refreshList(); 
 }
 
 async function deleteAnalyzeItems() {
@@ -2247,35 +2230,28 @@ async function deleteAnalyzeItems() {
 }
 
 function openAnalyzePathInMain() {
-    var targetPath = currentAnalyzePath; // 默认打开当前分析目录
+    var targetPath = currentAnalyzePath; 
 
-    // 未选择：直接打开当前分析目录
     if (!analyzeSelectedPaths || analyzeSelectedPaths.size === 0) {
         closeModal('analyzeModal');
         loadFileList(targetPath);
         return;
     }
 
-    // 选择多个：提示并返回
     if (analyzeSelectedPaths.size > 1) {
         alert('请只选择一个文件打开');
         return;
     }
 
-    // 仅选择一个
     var selectedPath = Array.from(analyzeSelectedPaths)[0];
 
-    // 尝试从表格行的 data 属性判断是否目录
-    // 注意：如果 selectedPath 含特殊字符，使用 CSS.escape 更安全
     var selectorPath = (window.CSS && CSS.escape) ? CSS.escape(selectedPath) : selectedPath;
     var row = document.querySelector('tr[data-path="' + selectorPath + '"]');
     var isDir = row ? (String(row.getAttribute('data-isdir')).toLowerCase() === 'true') : false;
 
     if (isDir) {
-        // 如果是文件夹，直接打开该文件夹
         targetPath = fixPath(selectedPath);
     } else {
-        // 如果是文件，打开它所在文件夹（兼容 / 和 \）
         var normalized = String(selectedPath).replace(/\\/g, '/');
         var idx = normalized.lastIndexOf('/');
         var parentDir = (idx > 0) ? normalized.slice(0, idx) : '/';
