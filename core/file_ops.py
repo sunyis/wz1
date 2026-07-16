@@ -15,7 +15,7 @@ class FileManager:
         self.trash_dir = f"{self.base_dir}/.wzfilemanager_trash"
 
     def _translate_error(self, e):
-     #   """将常见的系统底层错误翻译为中文"""
+        """将常见的系统底层错误翻译为中文"""
         err_msg = str(e)
         if "No such file" in err_msg or "Errno 2" in err_msg:
             return "文件或目录不存在,可以刷新试试"
@@ -383,7 +383,7 @@ class FileManager:
             ok, out, err = self.ssh.execute(cmd)
             if not ok:
                 err_msg = err or f"执行失败: {cmd}"
-                # 【新增】将常见的 Linux 错误翻译为中文
+                # 将常见的 Linux 错误翻译为中文
                 if 'invalid group' in err_msg:
                     return {"success": False, "msg": f"修改失败：系统中不存在名为 '{group}' 的用户组"}
                 if 'Operation not permitted' in err_msg:
@@ -410,7 +410,6 @@ class FileManager:
         except Exception as e: return None, "", str(e)
 
     def search(self, path: str, keyword: str, recursive: bool = False) -> Dict[str, Any]:
-        import stat as stat_module
         sftp = self._ensure_sftp()
         if not sftp: return {"success": False, "msg": "SFTP 未连接"}
         
@@ -441,7 +440,7 @@ class FileManager:
                     "mtime": mtime,
                     "permissions": self._format_permissions(mode),
                     "mtime_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
-                    "size_str": "-" if is_dir else self._format_size(size_int),  # 新增：与主页一致的大小格式
+                    "size_str": "-" if is_dir else self._format_size(size_int),
                     "extension": "" if is_dir else self._get_extension(name)
                 })
                 
