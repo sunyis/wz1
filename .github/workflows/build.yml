@@ -5,7 +5,7 @@ on:
 
 env:
   PROJECT: wzfilemanager
-  CUSTOM_VERSION: "1.0"
+  CUSTOM_VERSION: "1.0.0"
 
 jobs:
   # 任务 1：编译 Linux 多架构二进制文件
