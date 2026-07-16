@@ -7,9 +7,12 @@ from typing import Dict, Any, Tuple
 import paramiko
 
 class FileManager:
-    def __init__(self, ssh_manager):
+    def __init__(self, ssh_manager, base_dir="."):
         self.ssh = ssh_manager
-        self.trash_dir = "~/.wzfilemanager_trash"
+        # 获取传入目录的绝对路径，如果是软链接会解析到真实路径
+        self.base_dir = os.path.abspath(base_dir)
+        # 回收站直接放在 config.json 所在的目录下
+        self.trash_dir = f"{self.base_dir}/.wzfilemanager_trash"
 
     def _translate_error(self, e):
      #   """将常见的系统底层错误翻译为中文"""
@@ -32,10 +35,8 @@ class FileManager:
         return str(PurePosixPath(path))
 
     def _get_trash_base(self) -> str:
-        ok, out, _ = self.ssh.execute('echo $HOME')
-        if ok and out.strip():
-            return out.strip().rstrip('/') + "/.wzfilemanager_trash"
-        return "/.wzfilemanager_trash"
+        # 直接返回 config.json 所在目录下的回收站路径
+        return self.trash_dir
 
     def list_dir(self, path: str) -> Dict[str, Any]:
         if path.startswith('~'):
