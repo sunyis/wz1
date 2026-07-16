@@ -38,12 +38,18 @@ jobs:
             rm -rf /var/lib/apt/lists/*
             apt-get update || (sleep 5 && apt-get update) || (sleep 10 && apt-get update)
             
-            # 启用 universe 和 multiverse 源，确保能装上 p7zip-full 和 rar
+            # 启用 universe 和 multiverse 源，确保能装上 p7zip-full
             sed -i 's/^# deb/deb/' /etc/apt/sources.list || true
             apt-get update || true
-            timedatectl set-timezone Asia/Shanghai || true
-            # 安装基础环境及压缩工具，全部尝试安装，失败也不中断 (|| true)
-            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar rar curl build-essential libffi-dev libssl-dev || true
+            
+            # 【关键修复】仅 amd64 架构安装 rar 包，arm64/armv7 跳过
+            RAR_PKG=''
+            if [ '${{ matrix.arch }}' = 'amd64' ]; then
+              RAR_PKG='rar'
+            fi
+            
+            # 安装基础环境及压缩工具
+            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
             
             python3 -m venv venv
             source venv/bin/activate
@@ -147,7 +153,6 @@ jobs:
           - arch: armv7
             platform: linux/arm/v7
     steps:
-      # 【必须新增】拉取仓库代码，以便获取根目录的 start.sh
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -169,8 +174,6 @@ jobs:
           RUN sed -i 's/^# deb/deb/' /etc/apt/sources.list || true && \
               apt-get update && \
               apt-get install -y --no-install-recommends \
-              timedatectl set-timezone Asia/Shanghai || true \
-              apt-get install -y zip tar p7zip-full unrar rar || true \
               wget xz-utils zip tar openssh-client bash tzdata && \
               \
               # 1. 安装 7z: apt 优先，失败则从 GitHub 下载官方全架构预编译包
