@@ -222,31 +222,30 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
 .form-group input, .form-group select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; background: #fff; }
 .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); }
 
-.code-editor { width: 100%; min-height: 400px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; font-family: "Courier New", monospace; font-size: 16px; resize: vertical; line-height: 1.6; }
 .code-editor { width: 100%; min-height: 400px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; font-family: "Courier New", monospace; font-size: 11px; resize: vertical; line-height: 1.6; }
 
-/* 统一设置 CodeMirror 字体大小和行高，解决不对称问题 */
+/* 统一设置 CodeMirror 字体大小和行高 */
 .CodeMirror { 
     height: 450px !important; 
     border: 1px solid var(--border); 
     border-radius: 4px; 
     font-size: 11px; 
-    line-height: 1.4; /* 统一行高，防止上下错位 */
+    line-height: 1.4; 
     font-family: "Courier New", monospace; 
 }
-/* 统一行号字体大小，确保与代码对齐 */
 .CodeMirror-gutters, .CodeMirror-linenumber {
     font-size: 11px !important;
     line-height: 1.4 !important;
 }
 
-/* 仅在手机端强制允许文本选中，支持长按复制 */
+/* 强制允许长按弹出系统菜单选择文本 */
 @media (max-width: 768px) {
     .CodeMirror, .CodeMirror-lines, .CodeMirror-code, .CodeMirror-line, .CodeMirror-line * {
         -webkit-user-select: text !important;
         -moz-user-select: text !important;
         -ms-user-select: text !important;
         user-select: text !important;
+        -webkit-touch-callout: default !important; /* 允许长按弹出系统菜单 */
     }
 }
 
@@ -427,4 +426,4 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
     .modal-content.modal-large { width: 95%; }
     .status-bar { flex-wrap: wrap; gap: 5px; justify-content: center; bottom: 5px; left: 5px; right: 5px; }
     .disk-info { position: static; transform: none; width: 100%; }
-                     }
+}
