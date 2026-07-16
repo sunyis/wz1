@@ -245,6 +245,7 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
         -moz-user-select: text !important;
         -ms-user-select: text !important;
         user-select: text !important;
+        font-size: 16px !important;
         -webkit-touch-callout: default !important; /* 允许长按弹出系统菜单 */
     }
 }
