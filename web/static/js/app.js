@@ -15,6 +15,17 @@ var currentRenamePath = '';
 var globalFavorites = [];
 var trashEnabled = true; // 回收站状态，默认开启
 
+// 【全局拦截并翻译网络错误】
+const originalFetch = window.fetch;
+window.fetch = function() {
+    return originalFetch.apply(this, arguments).catch(function(err) {
+        if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+            throw new TypeError('网络连接失败，请刷新或服务器状态');
+        }
+        throw err;
+    });
+};
+
 // ====== 初始化 ======
 document.addEventListener('DOMContentLoaded', async function() {
     var initialPath = '/';
@@ -317,7 +328,7 @@ function handleItemClick(file, fullPath) {
     } else {
         var exts = ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'];
         if (exts.indexOf(file.extension) !== -1) {
-            showConfirmModal('确认解压', '是否将 ' + file.filename + ' 解压到当前目录的同名文件夹中？').then(function(confirmed) {
+            showConfirmModal('确认解压', '是否将 ' + file.filename + ' 解压到当前同名目录中？').then(function(confirmed) {
                 if (confirmed) {
                     extractFile(fullPath);
                 }
@@ -1678,7 +1689,7 @@ function restoreTrashItem(trash_id) {
 }
 
 async function deleteTrashItem(trash_id) {
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除该文件吗？此操作不可撤销！');
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除该文件吗？');
     if (!confirmed) return;
     
     var resp = await fetch('/api/trash/delete', {
@@ -1706,7 +1717,7 @@ async function restoreSelectedTrash() {
 
 async function deleteSelectedTrash() {
     if (selectedTrashIds.size === 0) return;
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + selectedTrashIds.size + ' 个文件吗？此操作不可撤销！');
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + selectedTrashIds.size + ' 个文件吗？');
     if (!confirmed) return;
     
     var resp = await fetch('/api/trash/delete-batch', {
@@ -1759,7 +1770,7 @@ function toggleTrashEnabled() {
         btn.classList.add('btn-primary');
         btn.classList.remove('btn-default');
         trashEnabled = false; 
-        updateStatus('回收站已关闭，后续删除将直接彻底删除');
+        updateStatus('回收站已关闭，后续将直接彻底删除');
     } else {
         btn.textContent = '关闭回收站';
         btn.classList.remove('btn-primary');
@@ -1905,8 +1916,14 @@ function saveSSHConfig() {
     })
     .then(function(resp) { return resp.json(); })
     .then(function(result) {
-        if (result.success) { window.location.reload(); } 
-        else { showAlert("SSH连接失败: " + result.msg + "。请检查密码或密钥是否正确。"); }
+        if (result.success) { 
+            window.location.reload(); 
+        } else { 
+            showAlert("SSH连接失败: " + result.msg); 
+        }
+    })
+    .catch(function(err) {
+        showAlert('请求失败: ' + err);
     });
 }
 
