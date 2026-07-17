@@ -411,6 +411,9 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
     border-top: 1px solid #e8e8e8;
     background-color: #fafafa;
 }
+/* 确保提示弹窗和确认弹窗始终在最顶层，不被设置窗口遮挡 */
+#alertModal { z-index: 1006 !important; }
+#confirmModal { z-index: 1006 !important; }
 /* ====== 手机端响应式 ====== */
 @media (max-width: 768px) {
     body { padding: 5px; }
