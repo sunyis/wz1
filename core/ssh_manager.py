@@ -63,11 +63,19 @@ class SSHManager:
                 self._connected = True
                 return True, "SSH 连接成功"
             except paramiko.AuthenticationException:
-                return False, "SSH 认证失败"
+                return False, "认证失败，密码或密钥不正确"
             except paramiko.SSHException as e:
-                return False, f"SSH 连接错误: {e}"
+                err_str = str(e)
+                # 拦截底层网络连接异常并翻译为中文
+                if "Unable to connect to port" in err_str or "Errno None" in err_str or "timed out" in err_str or "Connection refused" in err_str:
+                    return False, "请检查IP,端口,密码是否正确及网络是否通畅"
+                return False, f"SSH 连接错误: {err_str}"
             except Exception as e:
-                return False, f"连接异常: {e}"
+                err_str = str(e)
+                # 拦截底层网络连接异常并翻译为中文
+                if "Unable to connect to port" in err_str or "Errno None" in err_str or "timed out" in err_str or "Connection refused" in err_str:
+                    return False, "请检查IP,端口,密码是否正确及网络是否通畅"
+                return False, f"连接异常: {err_str}"
 
     def disconnect(self) -> None:
         """断开连接"""
