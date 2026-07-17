@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import stat
 import logging
 import asyncio
 import subprocess
@@ -389,6 +390,34 @@ async def change_password(request: Request):
     data = await request.json()
     success, msg = auth.change_password(data.get("old_password", ""), data.get("new_password", ""))
     return {"success": success, "msg": msg}
+
+@app.post("/api/config/home-path")
+async def set_home_path(request: Request):
+    data = await request.json()
+    req_path = data.get("path", "/").strip()
+    if not req_path:
+        req_path = "/"
+    
+    final_path = "/"
+    sftp = file_manager._ensure_sftp()
+    if sftp and req_path != "/":
+        try:
+            stat_info = sftp.stat(req_path)
+            if stat.S_ISDIR(stat_info.st_mode):
+                final_path = req_path
+            else:
+                # 如果是文件，自动识别为其所在的当前目录
+                final_path = os.path.dirname(req_path)
+        except Exception:
+            # 路径无效或不存在，自动恢复为 /
+            final_path = "/"
+    
+    # 保存到 config.json
+    server_config = config.get("server", default={})
+    server_config["home_path"] = final_path
+    config.update("server", server_config)
+    
+    return {"success": True, "path": final_path}
 
 @app.post("/api/config/server")
 async def update_server_config(request: Request):
