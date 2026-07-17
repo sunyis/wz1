@@ -394,6 +394,7 @@
                 <div class="config-tabs">
                     <button class="tab-btn active" data-tab="ssh" onclick="switchTab('ssh')">SSH 配置</button>
                     <button class="tab-btn" data-tab="security" onclick="switchTab('security')">安全设置</button>
+                    <button class="tab-btn" data-tab="home" onclick="switchTab('home')">启动主页</button>
                     <button class="tab-btn" data-tab="server" onclick="switchTab('server')">服务器</button>
                     <button class="tab-btn" data-tab="about" onclick="switchTab('about')">关于</button>
                 </div>
@@ -424,6 +425,32 @@
                     </div>
                 </div>
 
+                <div id="tab-home" class="tab-content">
+                    <div style="max-width: 500px; margin: 0 auto;">
+                    <br>
+                        <h3 style="font-size: 14px; font-weight: normal; color: #333; margin-bottom: 10px; text-align: left;">当前主页:</h3>
+                        <div class="form-group" style="margin-bottom: 15px;">
+                            <input type="text" id="customHomePath" placeholder="如 / 或 /var/www" value="/" style="width: 100%; text-align: left;">
+                        </div>
+
+                    <p style="text-align: center; font-size: 12px; margin-bottom: 25px;">
+                        <span style="color: #ff4d4f;">提示：</span><span style="color: #000;">主页必须是有效的, 完整文件夹路径 (例如: /www/wwwroot)</span>
+                    </p>
+                    
+                        <!-- 修改：将按钮和提示文本分组，使用相对定位和绝对定位实现按钮下方显示 -->
+                        <div style="display: flex; gap: 15px; justify-content: center; margin-bottom: 30px;">
+                            <div style="position: relative;">
+                                <button class="btn-default" style="padding: 6px 20px; font-size: 14px; font-weight: normal; color: #333;" onclick="resetHomePath()">恢复默认</button>
+                                <p id="resetHomeMsg" style="position: absolute; top: 100%; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 13px; height: 20px; line-height: 20px; margin-top: 5px; text-align: center;"></p>
+                            </div>
+                            <div style="position: relative;">
+                                <button class="btn-primary" style="padding: 6px 20px; font-size: 14px; font-weight: normal;" onclick="saveHomePath()">保存</button>
+                                <p id="saveHomeMsg" style="position: absolute; top: 100%; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 13px; height: 20px; line-height: 20px; margin-top: 5px; text-align: center;"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="tab-server" class="tab-content">
                     <div id="serverInfoDisplay" class="info-box"></div>
                     <div class="form-group"><label>监听地址</label><input type="text" id="serverHost" value="0.0.0.0"></div>
@@ -440,7 +467,7 @@
                             <span class="about-version">&nbsp;&nbsp;&nbsp;v1.0.0</span>
                         </div>
                         <div class="about-desc-center">
-                            <p>一个轻量、美观、跨平台的远程文件管理器，旨在为您提供高效、便捷的服务器文件管理体验。支持代码高亮、批量上传、回收站等实用功能。</p>
+                            <p>一个轻量、美观、跨平台的远程文件管理器，旨在为您提供高效、便捷的服务器文件管理体验。支持代码高亮、批量上传、回收站、占用分析等实用功能。</p>
                         </div>
                         
                         <div class="about-group">
@@ -565,4 +592,4 @@
 
     <script src="/static/js/app.js"></script>
 </body>
-                  </html>
+</html>
