@@ -323,6 +323,50 @@ async def restore_trash(request: Request):
     if not trash_id: return JSONResponse({"success": False, "msg": "缺少 trash_id"})
     return file_manager.restore(trash_id)
 
+@app.post("/api/trash/delete")
+async def delete_trash_item_api(request: Request):
+    data = await request.json()
+    trash_id = data.get("trash_id")
+    if not trash_id: return JSONResponse({"success": False, "msg": "缺少 trash_id"})
+    
+    trash_base = file_manager._get_trash_base()
+    if trash_id.startswith("root_"):
+        item_path = f"{trash_base}/{trash_id[5:]}"
+    else:
+        item_path = f"{trash_base}/{trash_id}"
+        
+    # 直接执行 rm -rf 彻底删除
+    ok, out, err = ssh.execute(f'rm -rf "{item_path}"')
+    if ok:
+        return {"success": True, "msg": "已彻底删除"}
+    return {"success": False, "msg": err or "删除失败"}
+
+@app.post("/api/trash/restore-batch")
+async def restore_trash_batch_api(request: Request):
+    data = await request.json()
+    trash_ids = data.get("trash_ids", [])
+    if not trash_ids: return JSONResponse({"success": False, "msg": "无选中项"})
+    for tid in trash_ids:
+        file_manager.restore(tid)
+    return {"success": True, "msg": f"已尝试还原 {len(trash_ids)} 项"}
+
+@app.post("/api/trash/delete-batch")
+async def delete_trash_batch_api(request: Request):
+    data = await request.json()
+    trash_ids = data.get("trash_ids", [])
+    if not trash_ids: return JSONResponse({"success": False, "msg": "无选中项"})
+    
+    trash_base = file_manager._get_trash_base()
+    for tid in trash_ids:
+        if tid.startswith("root_"):
+            item_path = f"{trash_base}/{tid[5:]}"
+        else:
+            item_path = f"{trash_base}/{tid}"
+        # 直接执行 rm -rf 彻底删除
+        ssh.execute(f'rm -rf "{item_path}"')
+        
+    return {"success": True, "msg": f"已彻底删除 {len(trash_ids)} 项"}
+
 @app.post("/api/trash/clear")
 async def clear_trash():
     trash_base = file_manager._get_trash_base()
