@@ -75,6 +75,7 @@
                 <button class="action-btn" onclick="invertSelect(event)">反选</button>
                 <button class="action-btn" onclick="batchAction('copy')" id="batchCopyBtn">复制</button>
                 <button class="action-btn" onclick="batchAction('move')" id="batchMoveBtn">移动</button>
+                <button class="action-btn danger" onclick="batchAction('delete')" style="margin-left: 5px;">删除</button>
                 <button class="action-btn" onclick="pasteFiles()">粘贴</button>
                 <button class="action-btn" onclick="batchAction('rename')">重命名</button>
                 <button class="action-btn" onclick="batchAction('compress')">压缩</button>
@@ -85,7 +86,6 @@
                 <button class="action-btn" onclick="showAnalyzeModal()">占用分析</button>
                 <button class="action-btn" id="batchAddFavBtn" onclick="batchAction('addFav')">添加收藏</button>
                 <button class="action-btn" id="batchDelFavBtn" onclick="batchAction('delFav')" style="display:none;">删除收藏</button>
-              <!--   <button class="action-btn danger" onclick="batchAction('delete')" style="margin-left: 5px;">删除</button> -->
             </div>
         </div>
 
@@ -236,14 +236,22 @@
             <div class="modal-body">
                 <div class="form-group">
                     <label>类型</label>
-                    <select id="createType">
-                        <option value="file">文件</option>
-                        <option value="dir">目录</option>
-                    </select>
+                    <div style="display: flex; justify-content: center; gap: 20px; margin-bottom: 5px;">
+                        <!-- 修改：增加上下 padding 到 12px，并统一 checkbox 尺寸防止抖动 -->
+                        <button type="button" id="btnTypeFile" onclick="selectCreateType('file')" style="flex: 0 0 auto; padding: 10px 18px; border: 2px solid #1890ff; border-radius: 4px; background: #fff; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; font-size: 16px; white-space: nowrap;">
+                            <input type="checkbox" id="checkTypeFile" checked style="margin-right: 8px; pointer-events: none; accent-color: #20a53a; width: 16px; height: 16px;" disabled>
+                            文件
+                        </button>
+                        <button type="button" id="btnTypeDir" onclick="selectCreateType('dir')" style="flex: 0 0 auto; padding: 10px 18px; border: 2px solid var(--border); border-radius: 4px; background: #fff; cursor: pointer; display: flex; align-items: center; justify-content: flex-start; font-size: 16px; white-space: nowrap;">
+                            <input type="checkbox" id="checkTypeDir" style="margin-right: 8px; pointer-events: none; accent-color: #20a53a; width: 16px; height: 16px;" disabled>
+                            文件夹
+                        </button>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>名称</label>
-                    <input type="text" id="createName" placeholder="输入名称">
+                    <!-- 关键修复：font-size: 16px 防止手机端点击放大和白屏 -->
+                    <input type="text" id="createName" placeholder="输入文件名称" style="font-size: 16px;">
                 </div>
             </div>
             <div class="modal-footer">
@@ -337,30 +345,34 @@
     <div class="modal-content modal-large" style="height: 600px;">
         <div class="modal-header">
             <h3>🗑️ 回收站</h3>
-            <div style="display: flex; gap: 20px; align-items: center;">
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <!-- 新增：隐藏的批量还原和批量删除按钮 -->
+                <button class="btn-primary hidden" id="restoreSelectedTrashBtn" style="font-size: 14px; border: 1px solid var(--primary); padding: 6px 16px;" onclick="restoreSelectedTrash()">批量还原</button>
+                <button class="btn-danger hidden" id="deleteSelectedTrashBtn" style="font-size: 14px; padding: 6px 16px;" onclick="deleteSelectedTrash()">批量删除</button>
                 <button class="btn-danger" style="font-size: 16px; border: 1px solid transparent;" onclick="clearTrash()">清空回收站</button>
                 <button class="btn-default" id="trashToggleBtn" onclick="toggleTrashEnabled()">关闭回收站</button>
                 <button class="modal-close" onclick="closeModal('trashModal')">×</button>
             </div>
         </div>
         
-            <div class="modal-body">
-                <table class="file-table">
-                    <thead>
-                        <tr>
-                            <th class="col-name">文件名</th>
-                            <th class="col-size">大小</th>
-                            <th class="col-time">删除时间</th>
-                            <th class="col-actions">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="trashTableBody">
-                        <tr><td colspan="4" class="loading">加载中...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+        <div class="modal-body">
+            <table class="file-table">
+                <thead>
+                    <tr>
+                        <th class="col-checkbox"><input type="checkbox" id="selectAllTrash" onchange="toggleSelectAllTrash(this)"></th>
+                        <th class="col-name">文件名</th>
+                        <th class="col-size">大小</th>
+                        <th class="col-time">删除时间</th>
+                        <th class="col-actions">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="trashTableBody">
+                    <tr><td colspan="5" class="loading">加载中...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
+</div>
 
     <!-- 通用确认弹窗 -->
     <div id="confirmModal" class="modal hidden" style="z-index: 1001; background: rgba(0,0,0,0.5);">
