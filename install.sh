@@ -23,8 +23,22 @@ install_system_deps() {
 
     if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
         apt-get update -y >/dev/null 2>&1
-        # 新增 zip, tar, rar, p7zip-full, p7zip-rar, unrar 的安装
-        apt-get install -y python3 python3-pip python3-venv curl iproute2 zip tar rar p7zip-full p7zip-rar unrar openssh-server >/dev/null 2>&1
+        
+        # 【关键修复】先判断系统是否已安装 python3、pip3 和 venv 模块
+        NEED_INSTALL=0
+        if ! command -v python3 &> /dev/null; then NEED_INSTALL=1; fi
+        if ! command -v pip3 &> /dev/null; then NEED_INSTALL=1; fi
+        if ! python3 -m venv --help &> /dev/null; then NEED_INSTALL=1; fi
+        
+        if [ "$NEED_INSTALL" -eq 1 ]; then
+            echo "系统缺少 Python 环境，正在强制安装 python3 python3-venv python3-pip..."
+            # 强制安装基础环境
+            apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1
+        fi
+        
+        # 安装其他所需系统依赖
+        apt-get install -y curl iproute2 zip tar rar p7zip-full p7zip-rar unrar openssh-server >/dev/null 2>&1
+        
     elif [[ "$OS" == "centos" ]] || [[ "$OS" == "rhel" ]] || [[ "$OS" == "rocky" ]] || [[ "$OS" == "almalinux" ]] || [[ "$OS" == "fedora" ]]; then
         if command -v dnf &> /dev/null; then
             dnf install -y python3 python3-pip curl iproute zip tar rar p7zip p7zip-plugins unrar openssh-server >/dev/null 2>&1
@@ -39,34 +53,7 @@ install_system_deps() {
     else
         echo "未识别的系统，尝试使用 apt 安装..."
         apt-get update -y >/dev/null 2>&1
-        apt-get install -y python3 python3-pip python3-venv curl zip tar rar p7zip-full p7zip-rar unrar openssh-server >/dev/null 2>&1 || true
-    fi
-}
-
-# 2. 检查并安装 SFTP 服务
-check_sftp_support() {
-    echo "正在检查 SFTP 服务支持..."
-    # 检查 sshd_config 中是否配置了 sftp 子系统
-    if grep -q "^Subsystem sftp" /etc/ssh/sshd_config 2>/dev/null; then
-        echo "✅ SFTP 服务已配置"
-        return 0
-    fi
-
-    echo "⚠️ 未检测到 SFTP 服务，尝试自动安装并配置..."
-    
-    if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
-        apt-get install -y openssh-server >/dev/null 2>&1
-        echo "Subsystem sftp /usr/lib/openssh/sftp-server" >> /etc/ssh/sshd_config
-        systemctl restart sshd >/dev/null 2>&1 || service ssh restart >/dev/null 2>&1
-    elif [[ "$OS" == "centos" ]] || [[ "$OS" == "rhel" ]] || [[ "$OS" == "rocky" ]] || [[ "$OS" == "almalinux" ]] || [[ "$OS" == "fedora" ]]; then
-        dnf install -y openssh-server >/dev/null 2>&1 || yum install -y openssh-server >/dev/null 2>&1
-        echo "Subsystem sftp /usr/libexec/openssh/sftp-server" >> /etc/ssh/sshd_config
-        systemctl restart sshd >/dev/null 2>&1
-    elif [[ "$OS" == "openwrt" ]]; then
-        opkg install openssh-sftp-server >/dev/null 2>&1
-        /etc/init.d/sshd restart >/dev/null 2>&1 || /etc/init.d/dropbear restart >/dev/null 2>&1
-    else
-        echo "❌ 无法自动安装 SFTP，请手动确保已安装 openssh-server 并在 sshd_config 中启用 Subsystem sftp"
+        apt-get install -y python3 python3-venv python3-pip curl zip tar rar p7zip-full p7zip-rar unrar openssh-server >/dev/null 2>&1 || true
     fi
 }
 
@@ -75,15 +62,44 @@ check_python() {
 }
 
 create_venv() {
-    if [ ! -d "venv" ]; then
-        python3 -m venv venv || { echo "创建虚拟环境失败，请尝试 apt/yum/opkg install python3-venv"; exit 1; }
+    if [ ! -d "venv" ] || [ ! -f "venv/bin/activate" ]; then
+        echo "正在创建 Python 虚拟环境..."
+        rm -rf venv
+        python3 -m venv venv || { echo "❌ 创建虚拟环境失败，请尝试 apt/yum install python3-venv"; exit 1; }
+    fi
+    
+    # 判断虚拟环境内 pip 是否可用，如果不可用则手动安装
+    if ! venv/bin/python -m pip -V &> /dev/null; then
+        echo "⚠️ 虚拟环境中缺少 pip，正在手动安装..."
+        
+        # 获取 Python 主版本号和次版本号 (如 3 和 8)
+        PY_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
+        PY_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+        
+        GET_PIP_URL="https://bootstrap.pypa.io/get-pip.py"
+        # 整数比较：如果是 Python 3.9 及以下版本，使用指定版本的 get-pip.py
+        if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -lt 10 ]]; then
+            GET_PIP_URL="https://bootstrap.pypa.io/pip/3.${PY_MINOR}/get-pip.py"
+        fi
+        
+        echo "检测到 Python 3.${PY_MINOR}，正在下载对应的 pip: $GET_PIP_URL"
+        curl -sS "$GET_PIP_URL" -o /tmp/get-pip.py
+        venv/bin/python /tmp/get-pip.py
+        rm -f /tmp/get-pip.py
+        
+        # 最终校验
+        if ! venv/bin/python -m pip -V &> /dev/null; then
+            echo "❌ 虚拟环境 pip 安装失败。"
+            exit 1
+        fi
+        echo "✅ 虚拟环境 pip 安装成功"
     fi
 }
 
 install_python_deps() {
-    source venv/bin/activate
-    pip install --upgrade pip >/dev/null 2>&1
-    pip install -r requirements.txt
+    # 使用 venv 内的 python -m pip 来执行，防止某些环境下 pip 软链接丢失
+    venv/bin/python -m pip install --upgrade pip >/dev/null 2>&1
+    venv/bin/python -m pip install -r requirements.txt
 }
 
 setup_config_and_port() {
@@ -196,7 +212,6 @@ EOF
 
 # 执行安装
 install_system_deps
-check_sftp_support
 check_python
 create_venv
 install_python_deps
