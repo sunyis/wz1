@@ -17,8 +17,18 @@ var trashEnabled = true; // 回收站状态，默认开启
 
 // ====== 初始化 ======
 document.addEventListener('DOMContentLoaded', async function() {
-    // 从 URL Hash 中恢复上次的路径，解决刷新丢失目录的问题
     var initialPath = '/';
+    
+    // 【新增】尝试从后端获取自定义主页路径
+    try {
+        var confResp = await fetch('/api/config');
+        var confData = await confResp.json();
+        if (confData.success && confData.config.server && confData.config.server.home_path) {
+            initialPath = confData.config.server.home_path;
+        }
+    } catch(e) {}
+
+    // 如果 URL Hash 有路径，优先使用 Hash 路径
     if (window.location.hash) {
         var hashPath = decodeURIComponent(window.location.hash.substring(1));
         if (hashPath) {
@@ -31,27 +41,24 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (window.location.hash !== newHash) {
         window.location.hash = newHash;
     }
-    
+
     var pathInput = document.getElementById('pathInput');
     if (pathInput) pathInput.value = currentPath;
-    
+
     var tbody = document.getElementById('fileTableBody');
     if (tbody) {
-        tbody.innerHTML = '<tr><td colspan="6" class="loading">检查 SSH 状态...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="loading"></td></tr>';
     }
 
-    // 【新增】检查是否已配置 SSH 密码或密钥
     try {
         var sshResp = await fetch('/api/ssh/status');
         var sshInfo = await sshResp.json();
         
         if (sshInfo.configured || sshInfo.connected) {
-            // 已配置密码/密钥，或者已经连上了，正常加载文件列表
             loadFileList(currentPath);
         } else {
-            // 未配置密码和密钥，提示用户去配置
             if (tbody) {
-                tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:#ff4d4f;">未配置SSH,请点击右上角设置图标添加SSH配置，已配置时请重新启动</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:#ff4d4f;">未配置SSH,请在设置内添加配置信息</td></tr>';
             }
             renderBreadcrumb(currentPath);
             updateStatus('请配置 SSH 连接');
@@ -83,11 +90,16 @@ function fixPath(path) {
     return path.replace(/\/+/g, '/');
 }
 
-// 格式化大小
+// 格式化大小 (智能匹配单位)
 function formatSize(bytes) {
     if (!bytes) return '0 B';
-    var gb = (bytes / 1073741824).toFixed(1);
-    return gb + ' GB';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    while (bytes >= 1024 && i < units.length - 1) {
+        bytes /= 1024;
+        i++;
+    }
+    return bytes.toFixed(1) + ' ' + units[i];
 }
 
 // 加载磁盘使用情况
@@ -197,7 +209,7 @@ function loadFileList(path) {
             }
         })
         .catch(function(err) {
-            tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:red">文件管理器已停止, 请重启!</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="loading" style="color:red">已断开, 请刷新或者重启恢复!</td></tr>';
             document.getElementById('sshStatus').textContent = 'SSH: 服务已断开';
             document.getElementById('sshStatus').classList.add('disconnected');
         });
@@ -732,20 +744,51 @@ function deleteFile(path) {
     });
 }
 
+// 选择创建类型，切换按钮样式和输入框提示
+function selectCreateType(type) {
+    var btnFile = document.getElementById('btnTypeFile');
+    var btnDir = document.getElementById('btnTypeDir');
+    var checkFile = document.getElementById('checkTypeFile');
+    var checkDir = document.getElementById('checkTypeDir');
+    var nameInput = document.getElementById('createName');
+    
+    if (!btnFile || !btnDir) return;
+
+    if (type === 'file') {
+        btnFile.style.borderColor = '#1890ff';
+        checkFile.checked = true;
+        btnDir.style.borderColor = 'var(--border)';
+        checkDir.checked = false;
+        if (nameInput) nameInput.placeholder = '输入文件名称';
+    } else {
+        btnDir.style.borderColor = '#1890ff';
+        checkDir.checked = true;
+        btnFile.style.borderColor = 'var(--border)';
+        checkFile.checked = false;
+        if (nameInput) nameInput.placeholder = '输入文件夹名称';
+    }
+}
+
 function showCreateModal() { 
     var nameInput = document.getElementById('createName');
     if (nameInput) nameInput.value = ''; 
+    selectCreateType('file'); // 默认选中文件
     showModal('createModal'); 
 }
 
 function createItem() {
-    var typeEl = document.getElementById('createType');
+    var checkFile = document.getElementById('checkTypeFile');
     var nameEl = document.getElementById('createName');
-    if (!typeEl || !nameEl) return;
+    if (!checkFile || !nameEl) return;
     
-    var type = typeEl.value;
+    // 通过勾选框状态判断当前类型
+    var type = checkFile.checked ? 'file' : 'dir';
     var name = nameEl.value;
-    if (!name) { showAlert('请输入名称'); return; }
+    if (!name) { 
+        showAlert('请输入' + (type === 'file' ? '文件名称' : '文件夹名称')); 
+        return; 
+    }
+    
     var path = fixPath(currentPath + '/' + name);
     fetch('/api/files/create', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1475,7 +1518,7 @@ function showFileInfo(path) {
                     '<p><strong>权限:</strong> ' + info.permissions + ' (' + (info.octal_permissions || '').replace('0o', '') + ')</p>' +
                     '<p><strong>用户组:</strong> ' + (info.group || '-') + '</p>' +
                     '<p><strong>修改时间:</strong> ' + info.mtime_str + '</p>' +
-                    '<p style="margin-bottom: 0; display:flex; align-items:center; white-space:nowrap;"><strong>路径:</strong>&nbsp;<span id="copyPath" style="cursor:pointer;color:var(--primary);font-weight:bold;overflow:hidden;text-overflow:ellipsis;" title="点击复制">' + info.path + '</span>&nbsp;&nbsp;<span id="copyIcon" style="cursor:pointer;font-size:16px;">📋</span></p>' +
+                    '<p style="margin-bottom: 0; word-break: break-all;"><strong>路径:</strong>&nbsp;<span id="copyPath" style="cursor:pointer;color:var(--primary);font-weight:bold;" title="点击复制">' + info.path + '</span>&nbsp;&nbsp;<span id="copyIcon" style="cursor:pointer;font-size:16px;">📋</span></p>' +
                     '<div id="pathCopyHint" class="copy-hint"></div>' +
                     '</div>';
                 showModal('infoModal');
@@ -1536,38 +1579,41 @@ function fallbackCopyTextToClipboard(text) {
 }
 
 // ====== 回收站 ======
+var selectedTrashIds = new Set();
+
 function showTrashModal() { showModal('trashModal'); loadTrashFiles(); }
 
 function loadTrashFiles() {
     var tbody = document.getElementById('trashTableBody');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="4" class="loading">加载中...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="loading">加载中...</td></tr>';
+    selectedTrashIds.clear();
+    updateTrashBatchBtns();
+    
     fetch('/api/trash/list')
         .then(function(resp){ return resp.json(); })
         .then(function(data) {
             tbody.innerHTML = '';
             if (data.success && data.files) {
                 if (data.files.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" class="loading">回收站为空</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="5" class="loading">回收站为空</td></tr>';
                     return;
                 }
                 data.files.forEach(function(file) {
                     var tr = document.createElement('tr');
                     
-                    // 1. 从文件名中提取后缀名，补充给 file 对象
                     if (file.filename && file.filename.includes('.')) {
                         file.extension = file.filename.split('.').pop().toLowerCase();
-                        // 【关键修复】如果有后缀名，说明是文件，强制修正 is_dir 为 false
                         file.is_dir = false; 
                     } else {
                         file.extension = '';
                     }
                     
-                    // 2. 调用统一的 getFileIcon 方法获取图标
                     var icon = getFileIcon(file);
                     
-                    tr.innerHTML = '<td><span class="file-icon">' + icon + '</span><span title="' + file.original_path + '">' + file.filename + '</span><br><small style="color:#999;">原路径: ' + file.original_path + '</small></td>' +
-                                   '<td>' + (file.size_str || '-') + '</td>' +
+                    tr.innerHTML = '<td class="col-checkbox"><input type="checkbox" data-id="' + file.trash_id + '" onclick="event.stopPropagation()" onchange="toggleSelectTrash(this, \'' + file.trash_id + '\')"></td>' +
+                                   '<td><span class="file-icon">' + icon + '</span><span title="' + file.original_path + '">' + file.filename + '</span><br><small style="color:#999;">原路径: ' + file.original_path + '</small></td>' +
+                                   '<td>' + (file.is_dir ? '-' : (file.size_str || '-')) + '</td>' + 
                                    '<td>' + (file.mtime_str || '-') + '</td>' +
                                    '<td>' +
                                    '<button class="action-btn" onclick="restoreTrashItem(\'' + file.trash_id + '\')">还原</button>' +
@@ -1576,9 +1622,36 @@ function loadTrashFiles() {
                     tbody.appendChild(tr);
                 });
             } else {
-                tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">' + (data.msg || '读取回收站失败') + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">' + (data.msg || '读取回收站失败') + '</td></tr>';
             }
         });
+}
+
+function toggleSelectTrash(cb, id) {
+    if (cb.checked) selectedTrashIds.add(id);
+    else selectedTrashIds.delete(id);
+    updateTrashBatchBtns();
+}
+
+function toggleSelectAllTrash(cb) {
+    var cbs = document.querySelectorAll('#trashTableBody input[type="checkbox"]');
+    selectedTrashIds.clear();
+    cbs.forEach(function(c) {
+        c.checked = cb.checked;
+        if (cb.checked) {
+            var id = c.getAttribute('data-id');
+            if (id) selectedTrashIds.add(id);
+        }
+    });
+    updateTrashBatchBtns();
+}
+
+function updateTrashBatchBtns() {
+    var show = selectedTrashIds.size >= 2; 
+    var restoreBtn = document.getElementById('restoreSelectedTrashBtn');
+    var deleteBtn = document.getElementById('deleteSelectedTrashBtn');
+    if (restoreBtn) restoreBtn.classList.toggle('hidden', !show);
+    if (deleteBtn) deleteBtn.classList.toggle('hidden', !show);
 }
                     
 function restoreTrashItem(trash_id) {
@@ -1604,19 +1677,47 @@ function restoreTrashItem(trash_id) {
     });
 }
 
-function deleteTrashItem(trash_id) {
-    showConfirmModal('确认删除', '确定彻底删除该文件吗？').then(function(confirmed) {
-        if (!confirmed) return;
-        fetch('/api/files/delete', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ path: '~/.wzfilemanager_trash/' + trash_id, permanent: true })
-        })
-        .then(function(resp){ return resp.json(); })
-        .then(function(data) {
-            if (data.success) { loadTrashFiles(); updateStatus('已彻底删除'); }
-            else { showAlert(data.msg); }
-        });
+async function deleteTrashItem(trash_id) {
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除该文件吗？此操作不可撤销！');
+    if (!confirmed) return;
+    
+    var resp = await fetch('/api/trash/delete', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ trash_id: trash_id })
     });
+    var data = await resp.json();
+    if (data.success) { loadTrashFiles(); updateStatus('已彻底删除'); }
+    else { showAlert(data.msg); }
+}
+
+async function restoreSelectedTrash() {
+    if (selectedTrashIds.size === 0) return;
+    var resp = await fetch('/api/trash/restore-batch', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ trash_ids: Array.from(selectedTrashIds) })
+    });
+    var data = await resp.json();
+    if (data.success) { 
+        loadTrashFiles(); 
+        refreshList(); 
+        updateStatus(data.msg); 
+    }
+}
+
+async function deleteSelectedTrash() {
+    if (selectedTrashIds.size === 0) return;
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + selectedTrashIds.size + ' 个文件吗？此操作不可撤销！');
+    if (!confirmed) return;
+    
+    var resp = await fetch('/api/trash/delete-batch', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ trash_ids: Array.from(selectedTrashIds) })
+    });
+    var data = await resp.json();
+    if (data.success) { 
+        loadTrashFiles(); 
+        updateStatus(data.msg); 
+    }
 }
 
 function showConfirmModal(title, msg) {
@@ -1699,8 +1800,74 @@ function loadConfig() {
                     var port = c.server.port || '未分配';
                     serverInfoEl.innerHTML = '<strong>当前配置信息</strong><br>监听: ' + c.server.host + ':' + port + '<br>会话超时: ' + c.auth.session_timeout + ' 秒<br>最大尝试: ' + c.auth.max_attempts + ' 次<br>锁定时间: ' + c.auth.lock_minutes + ' 分钟';
                 }
+
+                // 【新增】读取并填充启动主页配置
+                var homePathInput = document.getElementById('customHomePath');
+                var homePathMsg = document.getElementById('homePathMsg');
+                if (homePathInput) {
+                    homePathInput.value = (c.server && c.server.home_path) ? c.server.home_path : '/';
+                }
+                if (homePathMsg) {
+                    homePathMsg.textContent = ''; // 打开设置时清空提示
+                }
             }
         });
+}
+
+// 【新增】恢复默认主页
+var homePathTimer = null;
+function showHomePathMsg(elId, msg, color) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    el.style.color = color;
+    el.textContent = msg;
+    if (homePathTimer) clearTimeout(homePathTimer);
+    homePathTimer = setTimeout(function() {
+        el.textContent = ''; // 3秒后清空文本
+    }, 3000);
+}
+
+// 恢复默认主页
+function resetHomePath() {
+    var homePathInput = document.getElementById('customHomePath');
+    if (homePathInput) homePathInput.value = '/';
+    
+    fetch('/api/config/home-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: '/' })
+    })
+    .then(r => r.json())
+    .then(data => {
+        // 在“恢复默认”按钮下方显示提示
+        showHomePathMsg('resetHomeMsg', '已恢复/主页', '#20a53a');
+    });
+}
+
+// 保存自定义主页
+function saveHomePath() {
+    var homePathInput = document.getElementById('customHomePath');
+    var path = homePathInput ? homePathInput.value.trim() : '/';
+    
+    fetch('/api/config/home-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: path })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (homePathInput) homePathInput.value = data.path; // 显示后端处理后的最终路径
+            if (data.path === '/' && path !== '/') {
+                // 在“保存”按钮下方显示提示
+                showHomePathMsg('saveHomeMsg', '路径无效或为文件，已恢复为 /', '#ff4d4f');
+            } else {
+                showHomePathMsg('saveHomeMsg', '已添加成功', '#20a53a');
+            }
+        } else {
+            showHomePathMsg('saveHomeMsg', data.msg || '保存失败', '#ff4d4f');
+        }
+    });
 }
 
 function toggleAuthType() {
@@ -2077,11 +2244,13 @@ async function deleteSingleSearchItem(path) {
 // ====== 占用分析 ======
 var currentAnalyzePath = '/';
 var analyzeSelectedPaths = new Set();
+var analyzeCache = {}; // 【新增】分析数据缓存，防止后退重复计算
 
 async function showAnalyzeModal() {
     currentAnalyzePath = currentPath;
     analyzeSelectedPaths.clear();
     document.getElementById('analyzeDeleteBtn').classList.add('hidden');
+    analyzeCache = {}; // 每次打开窗口时清空缓存
     showModal('analyzeModal');
     await loadAnalyzeData(currentAnalyzePath);
 }
@@ -2089,6 +2258,7 @@ async function showAnalyzeModal() {
 async function loadAnalyzeData(path) {
     currentAnalyzePath = fixPath(path);
     
+    // 渲染面包屑导航
     var breadcrumb = document.getElementById('analyzeBreadcrumb');
     var parts = currentAnalyzePath.split('/').filter(function(p){return p;});
     var html = '<a onclick="loadAnalyzeData(\'/\')" style="cursor:pointer; color: var(--primary); text-decoration: none;">/</a>';
@@ -2100,13 +2270,25 @@ async function loadAnalyzeData(path) {
     breadcrumb.innerHTML = html;
 
     var tbody = document.getElementById('analyzeTableBody');
+    var totalSizeEl = document.getElementById('analyzeTotalSize');
+    
+    // 【关键修复】如果缓存中有数据，直接使用缓存，不再请求后端
+    if (analyzeCache[currentAnalyzePath]) {
+        var cachedData = analyzeCache[currentAnalyzePath];
+        totalSizeEl.textContent = cachedData.total_size_str;
+        renderAnalyzeList(cachedData.items);
+        return;
+    }
+
     tbody.innerHTML = '<tr><td colspan="4" class="loading">分析中，请稍候...</td></tr>';
+    totalSizeEl.textContent = '计算中...';
 
     try {
         var resp = await fetch('/api/files/analyze?path=' + encodeURIComponent(currentAnalyzePath));
         var data = await resp.json();
         if (data.success) {
-            document.getElementById('analyzeTotalSize').textContent = data.total_size_str;
+            analyzeCache[currentAnalyzePath] = data; // 存入缓存
+            totalSizeEl.textContent = data.total_size_str;
             renderAnalyzeList(data.items);
         } else {
             tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">' + (data.msg || '分析失败') + '</td></tr>';
@@ -2120,6 +2302,12 @@ function renderAnalyzeList(items) {
     var tbody = document.getElementById('analyzeTableBody');
     tbody.innerHTML = '';
 
+    // 【关键修复】过滤掉 kcore 等虚拟文件，防止误删
+    items = items.filter(function(item) {
+        return item.name !== 'kcore' && !item.path.includes('proc/kcore');
+    });
+
+    // 排序：文件夹优先，然后按大小降序
     items.sort(function(a, b) {
         if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
         return b.size - a.size;
