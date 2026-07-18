@@ -19,12 +19,9 @@ import uvicorn
 
 # 【关键修复】判断是否为 PyInstaller 打包环境，动态获取资源绝对路径
 if getattr(sys, 'frozen', False):
-    # 如果是 PyInstaller 打包的二进制运行，资源会被解压到 sys._MEIPASS
     BASE_DIR = sys._MEIPASS
-    # 运行目录改为二进制文件所在目录，防止无写权限导致卡死
     RUN_DIR = os.path.dirname(sys.executable)
 else:
-    # 如果是源码运行，使用当前目录
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     RUN_DIR = BASE_DIR
 
@@ -37,14 +34,14 @@ from core.port_detector import PortDetector
 from core.ssh_manager import SSHManager
 from core.file_ops import FileManager
 
-# 【修复 Errno 2】确保所有必需目录在启动前自动创建
+# 确保所有必需目录在启动前自动创建
 log_dir = os.path.join(RUN_DIR, "logs")
 Path(log_dir).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/static/css")).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/static/js")).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/templates")).mkdir(parents=True, exist_ok=True)
 
-# 【新增】Uvicorn 日志中文翻译过滤器
+# Uvicorn 日志中文翻译过滤器
 class ChineseLogFilter(logging.Filter):
     def filter(self, record):
         if "Started server process" in record.msg:
@@ -61,7 +58,6 @@ class ChineseLogFilter(logging.Filter):
             record.msg = record.msg.replace("Waiting for application shutdown.", "等待应用程序关闭...")
         elif "Application shutdown complete." in record.msg:
             record.msg = record.msg.replace("Application shutdown complete.", "应用程序关闭完成。")
-        # 【新增】翻译端口被占用错误
         elif "error while attempting to bind on address" in record.msg and "address already in use" in record.msg:
             record.msg = "端口被占用！请使用 'pkill -f wzfilemanager' 停止旧进程，或修改 config.json 中的端口后重试。"
         return True
@@ -76,7 +72,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 给 Uvicorn 的日志加上翻译过滤器
 logging.getLogger("uvicorn.error").addFilter(ChineseLogFilter())
 logging.getLogger("uvicorn.access").addFilter(ChineseLogFilter())
 
@@ -515,7 +510,6 @@ async def startup_event():
     logger.info(f"访问地址: http://{public_ip}:{port}")
     logger.info(f"默认登录密码: admin123")
     
-    # 自动识别路径并输出管理命令
     binary_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
     binary_dir = os.path.dirname(binary_path)
     
@@ -529,7 +523,6 @@ async def startup_event():
     logger.info("提示: 如果链接不能访问，请自行开放端口 (链接中的端口)")
     logger.info("=" * 60)
 
-    # 自动创建开机启动配置
     if getattr(sys, 'frozen', False):
         try:
             service_path = "/etc/systemd/system/wzfilemanager.service"
@@ -593,4 +586,36 @@ async def shutdown_event():
 if __name__ == "__main__":
     port = config.get("server", "port")
     host = config.get("server", "host", default="0.0.0.0")
+    
+    # 【关键修复】如果端口未配置（None），自动分配一个随机端口
+    if not port:
+        import socket, random
+        port_range = config.get("server", "port_range", default=[30000, 55000])
+        used_ports = set()
+        try:
+            import subprocess
+            result = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
+            for line in result.stdout.split("\n")[1:]:
+                parts = line.split()
+                if len(parts) >= 4 and ":" in parts[3]: used_ports.add(int(parts[3].rsplit(":", 1)[1]))
+        except: pass
+        
+        for _ in range(200):
+            random_port = random.randint(port_range[0], port_range[1])
+            if random_port not in used_ports:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    try:
+                        s.bind(("0.0.0.0", random_port))
+                        port = random_port
+                        break
+                    except OSError:
+                        continue
+        
+        if port:
+            config.update("server", {"port": port})
+            print(f"✅ 未配置端口，已自动分配随机端口: {port}")
+        else:
+            print("❌ 未配置端口，且自动分配失败，请手动在 config.json 中指定端口")
+            sys.exit(1)
+            
     uvicorn.run(app, host=host, port=port, log_level="info")
