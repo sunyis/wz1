@@ -48,8 +48,8 @@ jobs:
               RAR_PKG='rar'
             fi
             
-            # 安装基础环境及压缩工具
-            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev
+            # 安装基础环境及压缩工具，补全二进制运行必须的底层 C/C++ 运行库
+            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev libc6 libgcc-s1 libstdc++6 zlib1g
             
             python3 -m venv venv
             source venv/bin/activate
@@ -174,7 +174,8 @@ jobs:
           RUN sed -i 's/^# deb/deb/' /etc/apt/sources.list || true && \
               apt-get update && \
               apt-get install -y --no-install-recommends \
-              wget xz-utils zip tar openssh-client bash tzdata && \
+              wget xz-utils zip tar openssh-client bash tzdata \
+              libc6 libgcc-s1 libstdc++6 libffi8 libssl3 zlib1g && \
               \
               # 1. 安装 7z: apt 优先，失败则从 GitHub 下载官方全架构预编译包
               (apt-get install -y --no-install-recommends p7zip-full || ( \
