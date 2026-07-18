@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore")
 import os
 import sys
 import json
@@ -19,7 +21,7 @@ import uvicorn
 if getattr(sys, 'frozen', False):
     # 如果是 PyInstaller 打包的二进制运行，资源会被解压到 sys._MEIPASS
     BASE_DIR = sys._MEIPASS
-    # 运行目录（用于存放 config.json 和 logs）
+    # 运行目录改为二进制文件所在目录，防止无写权限导致卡死
     RUN_DIR = os.path.dirname(sys.executable)
 else:
     # 如果是源码运行，使用当前目录
@@ -42,6 +44,28 @@ Path(os.path.join(BASE_DIR, "web/static/css")).mkdir(parents=True, exist_ok=True
 Path(os.path.join(BASE_DIR, "web/static/js")).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/templates")).mkdir(parents=True, exist_ok=True)
 
+# 【新增】Uvicorn 日志中文翻译过滤器
+class ChineseLogFilter(logging.Filter):
+    def filter(self, record):
+        if "Started server process" in record.msg:
+            record.msg = record.msg.replace("Started server process", "已启动服务进程")
+        elif "Waiting for application startup." in record.msg:
+            record.msg = record.msg.replace("Waiting for application startup.", "等待应用程序启动...")
+        elif "Application startup complete." in record.msg:
+            record.msg = record.msg.replace("Application startup complete.", "应用程序启动完成。")
+        elif "Uvicorn running on" in record.msg:
+            record.msg = record.msg.replace("Uvicorn running on", "Uvicorn 运行在")
+        elif "Shutting down" in record.msg:
+            record.msg = record.msg.replace("Shutting down", "正在关闭")
+        elif "Waiting for application shutdown." in record.msg:
+            record.msg = record.msg.replace("Waiting for application shutdown.", "等待应用程序关闭...")
+        elif "Application shutdown complete." in record.msg:
+            record.msg = record.msg.replace("Application shutdown complete.", "应用程序关闭完成。")
+        # 【新增】翻译端口被占用错误
+        elif "error while attempting to bind on address" in record.msg and "address already in use" in record.msg:
+            record.msg = "端口被占用！请使用 'pkill -f wzfilemanager' 停止旧进程，或修改 config.json 中的端口后重试。"
+        return True
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -52,21 +76,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 给 Uvicorn 的日志加上翻译过滤器
+logging.getLogger("uvicorn.error").addFilter(ChineseLogFilter())
+logging.getLogger("uvicorn.access").addFilter(ChineseLogFilter())
+
 config_path = os.path.join(RUN_DIR, "config.json")
 config = ConfigManager(config_path)
 auth = AuthManager(config)
 ssh = SSHManager(config)
 
-# 获取 config.json 所在的真实目录（如果是软链接会解析到源文件目录，如 Docker 中的 data 目录）
 real_config_dir = os.path.dirname(os.path.realpath(config_path))
 file_manager = FileManager(ssh, real_config_dir)
 
 app = FastAPI(title="WzFileManager", version="1.0.0")
 
-# 使用前面计算好的绝对路径挂载静态文件和模板
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "web/static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "web/templates"))
-
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -90,7 +115,6 @@ async def auth_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
@@ -98,7 +122,6 @@ async def login_page(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("file_manager.html", {"request": request})
-
 
 @app.get("/api/public-info")
 async def public_info():
@@ -132,24 +155,24 @@ async def api_logout(request: Request):
 
 @app.get("/api/ssh/status")
 async def ssh_status():
-    ok, msg = ssh.ensure_connected()
-    # 【新增】检查是否已配置密码或密钥密码
     is_configured = bool(config.get("ssh", "password") or config.get("ssh", "key_password"))
+    ok = False
+    msg = "未配置 SSH 密码或密钥"
+    if is_configured:
+        try:
+            ok, msg = ssh.ensure_connected()
+        except Exception:
+            ok = False
+            msg = "SSH 连接异常，请检查配置"
     return {
-        "success": True, 
-        "connected": ok, 
-        "message": msg,
-        "configured": is_configured,  # 新增字段：是否已配置密码/密钥
-        "host": config.get("ssh", "host"), 
-        "port": config.get("ssh", "port"),
-        "username": config.get("ssh", "username")
+        "success": True, "connected": ok, "message": msg, "configured": is_configured,
+        "host": config.get("ssh", "host"), "port": config.get("ssh", "port"), "username": config.get("ssh", "username")
     }
 
 @app.post("/api/ssh/connect")
 async def ssh_connect():
     ok, msg = ssh.connect()
     return {"success": ok, "msg": msg}
-
 
 @app.get("/api/files/list")
 async def list_files(path: str = "/"):
@@ -190,45 +213,33 @@ async def rename_item(request: Request):
 @app.post("/api/files/copy")
 async def copy_item(request: Request):
     data = await request.json()
-    src = data.get("src")
-    dst = data.get("dst")
-    overwrite = data.get("overwrite", False)
-    
+    src = data.get("src"); dst = data.get("dst"); overwrite = data.get("overwrite", False)
     sftp = file_manager._ensure_sftp()
     if not sftp: return JSONResponse({"success": False, "msg": "SFTP 未连接"})
     try:
-        sftp.stat(dst)
-        exists = True
+        sftp.stat(dst); exists = True
     except IOError:
         exists = False
-        
     if exists and not overwrite:
         return JSONResponse({"success": False, "code": "exists", "msg": "目标文件已存在"})
     if exists and overwrite:
         file_manager.delete(dst)
-        
     return file_manager.copy(src, dst)
 
 @app.post("/api/files/move")
 async def move_item(request: Request):
     data = await request.json()
-    src = data.get("src")
-    dst = data.get("dst")
-    overwrite = data.get("overwrite", False)
-    
+    src = data.get("src"); dst = data.get("dst"); overwrite = data.get("overwrite", False)
     sftp = file_manager._ensure_sftp()
     if not sftp: return JSONResponse({"success": False, "msg": "SFTP 未连接"})
     try:
-        sftp.stat(dst)
-        exists = True
+        sftp.stat(dst); exists = True
     except IOError:
         exists = False
-        
     if exists and not overwrite:
         return JSONResponse({"success": False, "code": "exists", "msg": "目标文件已存在"})
     if exists and overwrite:
         file_manager.delete(dst)
-        
     return file_manager.move(src, dst)
 
 @app.post("/api/files/chmod")
@@ -237,14 +248,10 @@ async def chmod_item(request: Request):
     mode = int(data.get("mode"), 8)
     return file_manager.chmod(data.get("path"), mode)
 
-# 新增：处理权限和用户组同时修改的接口
 @app.post("/api/files/perm")
 async def set_file_permission(request: Request):
     data = await request.json()
-    path = data.get("path")
-    perm = data.get("perm")
-    group = data.get("group")
-    recursive = data.get("recursive", False)
+    path = data.get("path"); perm = data.get("perm"); group = data.get("group"); recursive = data.get("recursive", False)
     return file_manager.set_permission(path, perm, group, recursive)
 
 @app.post("/api/files/upload")
@@ -252,17 +259,13 @@ async def upload_file(path: str = Form(...), file: UploadFile = File(...), overw
     file_data = await file.read()
     sftp = file_manager._ensure_sftp()
     if not sftp: return JSONResponse({"success": False, "msg": "SFTP 未连接"})
-    
     remote_file = file_manager._normalize_path(f"{path}/{file.filename}")
     try:
-        sftp.stat(remote_file)
-        exists = True
+        sftp.stat(remote_file); exists = True
     except IOError:
         exists = False
-    
     if exists and not overwrite:
         return JSONResponse({"success": False, "code": "exists", "msg": f"文件 {file.filename} 已存在"})
-    
     return file_manager.upload_file(path, file_data, file.filename)
 
 @app.get("/api/files/download")
@@ -270,14 +273,9 @@ async def download_file(path: str):
     data, filename, error = file_manager.download_file(path)
     if error:
         return JSONResponse({"success": False, "msg": error})
-    
-    # 对文件名进行 RFC 5987 编码，支持中文和表情符号
     ascii_filename = filename.encode('ascii', 'ignore').decode('ascii') or 'download'
     quoted_filename = urllib.parse.quote(filename)
-    
-    headers = {
-        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}"
-    }
+    headers = {"Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}"}
     return Response(content=data, media_type="application/octet-stream", headers=headers)
 
 @app.post("/api/files/compress")
@@ -310,8 +308,7 @@ async def dir_size(path: str):
 @app.get("/api/files/analyze")
 async def analyze_disk(path: str):
     return file_manager.analyze_disk(path)
-    
-# ----- 回收站接口 -----
+
 @app.get("/api/trash/list")
 async def list_trash():
     return file_manager.list_trash()
@@ -328,17 +325,13 @@ async def delete_trash_item_api(request: Request):
     data = await request.json()
     trash_id = data.get("trash_id")
     if not trash_id: return JSONResponse({"success": False, "msg": "缺少 trash_id"})
-    
     trash_base = file_manager._get_trash_base()
     if trash_id.startswith("root_"):
         item_path = f"{trash_base}/{trash_id[5:]}"
     else:
         item_path = f"{trash_base}/{trash_id}"
-        
-    # 直接执行 rm -rf 彻底删除
     ok, out, err = ssh.execute(f'rm -rf "{item_path}"')
-    if ok:
-        return {"success": True, "msg": "已彻底删除"}
+    if ok: return {"success": True, "msg": "已彻底删除"}
     return {"success": False, "msg": err or "删除失败"}
 
 @app.post("/api/trash/restore-batch")
@@ -355,27 +348,22 @@ async def delete_trash_batch_api(request: Request):
     data = await request.json()
     trash_ids = data.get("trash_ids", [])
     if not trash_ids: return JSONResponse({"success": False, "msg": "无选中项"})
-    
     trash_base = file_manager._get_trash_base()
     for tid in trash_ids:
         if tid.startswith("root_"):
             item_path = f"{trash_base}/{tid[5:]}"
         else:
             item_path = f"{trash_base}/{tid}"
-        # 直接执行 rm -rf 彻底删除
         ssh.execute(f'rm -rf "{item_path}"')
-        
     return {"success": True, "msg": f"已彻底删除 {len(trash_ids)} 项"}
 
 @app.post("/api/trash/clear")
 async def clear_trash():
     trash_base = file_manager._get_trash_base()
     ok, out, err = ssh.execute(f'rm -rf "{trash_base}"/*')
-    if ok:
-        return {"success": True, "msg": "回收站已清空"}
+    if ok: return {"success": True, "msg": "回收站已清空"}
     return {"success": False, "msg": err}
 
-# ----- 收藏夹接口 (云端同步) -----
 @app.get("/api/favorites")
 async def get_favorites():
     favs = config.get("favorites", default=[])
@@ -413,6 +401,16 @@ async def get_config():
         }
     }
 
+def _translate_ssh_error(err_msg):
+    err_msg = str(err_msg)
+    if "Unable to connect to port" in err_msg or "Errno None" in err_msg or "Connection refused" in err_msg or "timed out" in err_msg:
+        return "请在顶部设置中配置"
+    if "Authentication failed" in err_msg or "All configured authentication methods failed" in err_msg:
+        return "认证失败，密码或密钥不正确"
+    if "not a valid RSA private key" in err_msg or "Invalid key" in err_msg:
+        return "密钥文件无效或格式错误"
+    return err_msg
+
 @app.post("/api/config/ssh")
 async def update_ssh_config(request: Request):
     data = await request.json()
@@ -427,6 +425,8 @@ async def update_ssh_config(request: Request):
     })
     ssh.disconnect()
     ok, msg = ssh.connect()
+    if not ok:
+        msg = _translate_ssh_error(msg)
     return {"success": ok, "msg": msg}
 
 @app.post("/api/config/password")
@@ -441,7 +441,6 @@ async def set_home_path(request: Request):
     req_path = data.get("path", "/").strip()
     if not req_path:
         req_path = "/"
-    
     final_path = "/"
     sftp = file_manager._ensure_sftp()
     if sftp and req_path != "/":
@@ -450,17 +449,12 @@ async def set_home_path(request: Request):
             if stat.S_ISDIR(stat_info.st_mode):
                 final_path = req_path
             else:
-                # 如果是文件，自动识别为其所在的当前目录
                 final_path = os.path.dirname(req_path)
         except Exception:
-            # 路径无效或不存在，自动恢复为 /
             final_path = "/"
-    
-    # 保存到 config.json
     server_config = config.get("server", default={})
     server_config["home_path"] = final_path
     config.update("server", server_config)
-    
     return {"success": True, "path": final_path}
 
 @app.post("/api/config/server")
@@ -482,7 +476,6 @@ async def update_server_config(request: Request):
     })
     return {"success": True, "msg": "配置已更新，重启后生效"}
 
-
 def open_firewall_port(port):
     try:
         if subprocess.run(["which", "firewall-cmd"], capture_output=True).stdout:
@@ -501,16 +494,13 @@ async def startup_event():
         
     open_firewall_port(port)
     
-    # 【新增】自动获取公网 IP 并更新 config.json
     current_ssh_host = config.get("ssh", "host", default="")
     public_ip = current_ssh_host
-    
     if not current_ssh_host or current_ssh_host == "0.0.0.0":
-        logger.info("检测到 SSH Host 未配置 (0.0.0.0)，正在自动获取公网 IP...")
+        logger.info("检测到SSH未配置，正在自动获取公网 IP...")
         detected_ip = IPDetector.get_public_ip()
         if detected_ip:
             public_ip = detected_ip
-            # 读取现有配置，更新 host，写回文件，防止覆盖其他 SSH 字段
             ssh_config = config.get("ssh", default={})
             ssh_config["host"] = detected_ip
             config.update("ssh", ssh_config)
@@ -523,30 +513,75 @@ async def startup_event():
     logger.info("=" * 60)
     logger.info("WzFileManager 启动成功!")
     logger.info(f"访问地址: http://{public_ip}:{port}")
+    logger.info(f"默认登录密码: admin123")
+    
+    # 自动识别路径并输出管理命令
+    binary_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+    binary_dir = os.path.dirname(binary_path)
+    
+    logger.info("-" * 60)
+    logger.info("【管理命令】")
+    logger.info(f"启动: {binary_path}")
+    logger.info(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+    logger.info(f"停止: pkill -f '{binary_path}'")
+    logger.info(f"重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+    logger.info("-" * 60)
+    logger.info("提示: 如果链接不能访问，请自行开放端口 (链接中的端口)")
     logger.info("=" * 60)
 
-    if config.get("ssh", "host"):
-        ok, msg = ssh.connect()
-        logger.info(f"SSH 自动连接: {msg}")
+    # 自动创建开机启动配置
+    if getattr(sys, 'frozen', False):
+        try:
+            service_path = "/etc/systemd/system/wzfilemanager.service"
+            if not os.path.exists(service_path):
+                service_content = f"""[Unit]
+Description=WzFileManager Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={binary_dir}
+ExecStart={binary_path}
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+"""
+                with open(service_path, 'w') as f:
+                    f.write(service_content)
+                os.system("systemctl daemon-reload")
+                os.system("systemctl enable wzfilemanager")
+                logger.info("✅ 已自动创建并启用开机自启服务 (wzfilemanager.service)")
+        except Exception as e:
+            logger.warning(f"⚠️ 创建开机自启服务失败: {str(e)}")
+
+    ssh_password = config.get("ssh", "password", default="")
+    ssh_key_password = config.get("ssh", "key_password", default="")
+    if config.get("ssh", "host") and (ssh_password or ssh_key_password):
+        try:
+            ok, msg = ssh.connect()
+            logger.info(f"SSH 自动连接: {msg}")
+        except Exception as e:
+            logger.warning(f"SSH 自动连接失败，请检查配置: {str(e)}")
+    else:
+        logger.info("未配置 SSH 密码或密钥，跳过自动连接。")
 
     async def cleanup_loop():
         while True:
             await asyncio.sleep(300)
             auth.cleanup_expired()
-            
-            # 【新增】检查日志文件大小，超过 1MB 则只保留最新 50 行
             log_file_path = os.path.join(log_dir, "app.log")
             try:
                 if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 1 * 1024 * 1024:
                     with open(log_file_path, 'r', encoding='utf-8') as f:
                         lines = f.readlines()
-                    # 保留最后 50 行
                     last_50_lines = lines[-50:]
                     with open(log_file_path, 'w', encoding='utf-8') as f:
                         f.writelines(last_50_lines)
                     logger.info("日志文件超过 1MB，已自动清理并保留最新 50 行")
-            except Exception as e:
-                pass # 防止日志清理失败导致主循环崩溃
+            except Exception:
+                pass
 
     asyncio.create_task(cleanup_loop())
 
