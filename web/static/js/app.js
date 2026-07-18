@@ -2406,7 +2406,9 @@ function editAnalyzeItem(path) {
 }
 
 async function deleteAnalyzeItem(path) {
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除 ' + path.split('/').pop() + ' 吗？');
+    var fileName = path.split('/').pop();
+    var msg = trashEnabled ? '确定将 ' + fileName + ' 移入回收站吗？' : '确定彻底删除 ' + fileName + ' 吗？';
+    var confirmed = await showConfirmModal('确认删除', msg);
     if (!confirmed) return;
     
     await fetch('/api/files/delete', {
@@ -2414,12 +2416,14 @@ async function deleteAnalyzeItem(path) {
         body: JSON.stringify({ path: path, permanent: !trashEnabled })
     });
     await loadAnalyzeData(currentAnalyzePath);
-    refreshList(); 
+    refreshList(); // 刷新主页面
 }
 
 async function deleteAnalyzeItems() {
     if (analyzeSelectedPaths.size === 0) return;
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + analyzeSelectedPaths.size + ' 个文件吗？');
+    var count = analyzeSelectedPaths.size;
+    var msg = trashEnabled ? '确定将选中的 ' + count + ' 个文件移入回收站吗？' : '确定彻底删除选中的 ' + count + ' 个文件吗？';
+    var confirmed = await showConfirmModal('确认删除', msg);
     if (!confirmed) return;
 
     for (var p of analyzeSelectedPaths) {
