@@ -24,7 +24,8 @@ class ConfigManager:
         self._initialized = True
         self.config_path = Path(config_path)
         self._config: Dict[str, Any] = {}
-        self._file_lock = threading.Lock()
+        # 【关键修复】将 Lock 改为 RLock，允许同一线程多次获取锁，防止 load 调用 save 时死锁
+        self._file_lock = threading.RLock()
         self.load()
 
     def load(self) -> Dict[str, Any]:
@@ -83,13 +84,13 @@ class ConfigManager:
         return {
             "server": {
                 "host": "0.0.0.0",
-                "port": None,
+                "port": null,
                 "port_range": [30000, 55000],
                 "auto_port": True
             },
             "auth": {
-                "password": "change_me_please",
-                "session_timeout": 7200,
+                "password": "admin123",
+                "session_timeout": 2592000,
                 "max_attempts": 5,
                 "lock_minutes": 30
             },
