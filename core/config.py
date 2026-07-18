@@ -84,7 +84,7 @@ class ConfigManager:
         return {
             "server": {
                 "host": "0.0.0.0",
-                "port": null,
+                "port": None,  # 【关键修复】将 null 改为 Python 的 None
                 "port_range": [30000, 55000],
                 "auto_port": True
             },
