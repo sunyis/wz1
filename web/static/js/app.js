@@ -2415,6 +2415,12 @@ async function deleteAnalyzeItem(path) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path, permanent: !trashEnabled })
     });
+    
+    // 【关键修复】清除当前目录的分析缓存，强制下次加载时从服务器拉取最新数据
+    if (analyzeCache[currentAnalyzePath]) {
+        delete analyzeCache[currentAnalyzePath];
+    }
+    
     await loadAnalyzeData(currentAnalyzePath);
     refreshList(); // 刷新主页面
 }
@@ -2434,6 +2440,12 @@ async function deleteAnalyzeItems() {
     }
     analyzeSelectedPaths.clear();
     document.getElementById('analyzeDeleteBtn').classList.add('hidden');
+    
+    // 【关键修复】清除当前目录的分析缓存，强制下次加载时从服务器拉取最新数据
+    if (analyzeCache[currentAnalyzePath]) {
+        delete analyzeCache[currentAnalyzePath];
+    }
+    
     await loadAnalyzeData(currentAnalyzePath);
     refreshList();
 }
