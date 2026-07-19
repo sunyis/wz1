@@ -10,7 +10,7 @@ env:
 jobs:
   # 任务 1：编译 Linux 多架构二进制文件
   build-linux-binary:
-    runs-on: ubuntu-16.04
+    runs-on: Debian-8
     strategy:
       fail-fast: false
       matrix:
