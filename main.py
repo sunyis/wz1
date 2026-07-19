@@ -41,39 +41,63 @@ Path(os.path.join(BASE_DIR, "web/static/css")).mkdir(parents=True, exist_ok=True
 Path(os.path.join(BASE_DIR, "web/static/js")).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/templates")).mkdir(parents=True, exist_ok=True)
 
+# 【日志优化】控制台输出纯文本，文件保留详细日志
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter('%(message)s'))
+file_handler = logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(stream_handler)
+root_logger.addHandler(file_handler)
+
+# 全局标志：记录是否因为端口被占用而关闭
+is_port_in_use = False
+
 # Uvicorn 日志中文翻译过滤器
 class ChineseLogFilter(logging.Filter):
     def filter(self, record):
-        if "Started server process" in record.msg:
-            record.msg = record.msg.replace("Started server process", "已启动服务进程")
-        elif "Waiting for application startup." in record.msg:
-            record.msg = record.msg.replace("Waiting for application startup.", "等待应用程序启动...")
-        elif "Application startup complete." in record.msg:
-            record.msg = record.msg.replace("Application startup complete.", "应用程序启动完成。")
-        elif "Uvicorn running on" in record.msg:
-            record.msg = record.msg.replace("Uvicorn running on", "Uvicorn 运行在")
-        elif "Shutting down" in record.msg:
-            record.msg = record.msg.replace("Shutting down", "正在关闭")
-        elif "Waiting for application shutdown." in record.msg:
-            record.msg = record.msg.replace("Waiting for application shutdown.", "等待应用程序关闭...")
-        elif "Application shutdown complete." in record.msg:
-            record.msg = record.msg.replace("Application shutdown complete.", "应用程序关闭完成。")
-        elif "error while attempting to bind on address" in record.msg and "address already in use" in record.msg:
-            record.msg = "端口被占用！请使用 'pkill -f wzfilemanager' 停止旧进程，或修改 config.json 中的端口后重试。"
+        global is_port_in_use
+        msg = str(record.msg)
+        if "Started server process" in msg:
+            record.msg = msg.replace("Started server process", "已启动服务进程")
+        elif "Waiting for application startup." in msg:
+            record.msg = msg.replace("Waiting for application startup.", "等待应用程序启动...")
+        elif "Application startup complete." in msg:
+            record.msg = msg.replace("Application startup complete.", "应用程序启动完成。 (启动下 CTRL+C 退出)")
+        elif "Uvicorn running on" in msg:
+            return False # 直接丢弃，不显示
+        elif "Shutting down" in msg:
+            if is_port_in_use: return False # 端口占用时隐藏
+            record.msg = msg.replace("Shutting down", "正在关闭")
+        elif "Waiting for application shutdown." in msg:
+            if is_port_in_use: return False # 端口占用时隐藏
+            record.msg = msg.replace("Waiting for application shutdown.", "等待应用程序关闭...")
+        elif "Application shutdown complete." in msg:
+            if is_port_in_use: return False # 端口占用时隐藏
+            record.msg = msg.replace("Application shutdown complete.", "应用程序关闭完成。")
+        elif "Finished server process" in msg:
+            record.msg = msg.replace("Finished server process", "已停止服务进程")
+        elif "error while attempting to bind on address" in msg and "address already in use" in msg:
+            record.msg = "端口被占用！请使用 pkill -f wzfilemanager 停止旧进程，或修改 config.json 中的端口后重试。"
+            is_port_in_use = True # 标记为端口占用
+        # 拦截 asyncio 强制取消导致的报错
+        elif "CancelledError" in msg or "asyncio.exceptions.CancelledError" in msg:
+            return False
         return True
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8')
-    ]
-)
-logger = logging.getLogger(__name__)
-
+# 清除 uvicorn 默认处理器，传播到 root_logger 统一处理
+uvicorn_logger = logging.getLogger("uvicorn")
+uvicorn_logger.handlers = []
+uvicorn_logger.propagate = True
 logging.getLogger("uvicorn.error").addFilter(ChineseLogFilter())
 logging.getLogger("uvicorn.access").addFilter(ChineseLogFilter())
+
+# 屏蔽 Paramiko 底层打印的 sftp session closed 等冗余日志
+logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 config_path = os.path.join(RUN_DIR, "config.json")
 config = ConfigManager(config_path)
@@ -474,10 +498,10 @@ async def update_server_config(request: Request):
 def open_firewall_port(port):
     try:
         if subprocess.run(["which", "firewall-cmd"], capture_output=True).stdout:
-            subprocess.run(["firewall-cmd", "--zone=public", "--add-port", f"{port}/tcp", "--permanent"], check=False)
-            subprocess.run(["firewall-cmd", "--reload"], check=False)
+            subprocess.run(["firewall-cmd", "--zone=public", "--add-port", f"{port}/tcp", "--permanent"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["firewall-cmd", "--reload"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif subprocess.run(["which", "ufw"], capture_output=True).stdout:
-            subprocess.run(["ufw", "allow", f"{port}/tcp"], check=False)
+            subprocess.run(["ufw", "allow", f"{port}/tcp"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except: pass
 
 @app.on_event("startup")
@@ -492,42 +516,82 @@ async def startup_event():
     current_ssh_host = config.get("ssh", "host", default="")
     public_ip = current_ssh_host
     if not current_ssh_host or current_ssh_host == "0.0.0.0":
-        logger.info("检测到SSH未配置，正在自动获取公网 IP...")
+        print("检测到SSH未配置，正在自动获取公网 IP...")
         detected_ip = IPDetector.get_public_ip()
         if detected_ip:
             public_ip = detected_ip
             ssh_config = config.get("ssh", default={})
             ssh_config["host"] = detected_ip
             config.update("ssh", ssh_config)
-            logger.info(f"✅ 已自动获取公网 IP 并更新至配置文件: {detected_ip}")
+            print(f"✅ 已自动获取公网 IP 并更新至配置文件: {detected_ip}")
         else:
-            logger.warning("⚠️ 无法获取公网 IP，请在配置文件中手动设置 ssh.host")
+            print("⚠️ 无法获取公网 IP，请在配置文件中手动设置 ssh.host")
     else:
-        logger.info(f"配置文件中已有 SSH Host ({current_ssh_host})，跳过自动获取。")
+        print(f"配置文件中已有 SSH Host ({current_ssh_host})，跳过自动获取。")
     
-    logger.info("=" * 60)
-    logger.info("WzFileManager 启动成功!")
-    logger.info(f"访问地址: http://{public_ip}:{port}")
-    logger.info(f"默认登录密码: admin123")
+    print("=" * 60)
+    print("WzFileManager 启动成功!")
+    print(f"访问地址: http://{public_ip}:{port}")
+    print(f"默认登录密码: admin123")
     
     binary_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
     binary_dir = os.path.dirname(binary_path)
     
-    logger.info("-" * 60)
-    logger.info("【管理命令】")
-    logger.info(f"启动: {binary_path}")
-    logger.info(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
-    logger.info(f"停止: pkill -f '{binary_path}'")
-    logger.info(f"重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
-    logger.info("-" * 60)
-    logger.info("提示: 如果链接不能访问，请自行开放端口 (链接中的端口)")
-    logger.info("=" * 60)
+    print("=" * 60)
+    print("【管理命令】")
+    print("-" * 20)
+    print("1. Systemd 服务管理 (推荐):")
+    print("启动: systemctl start wzfilemanager")
+    print("停止: systemctl stop wzfilemanager")
+    print("重启: systemctl restart wzfilemanager")
+    print("状态: systemctl status wzfilemanager --no-pager")
+    print("-" * 20)
+    print("2. 手动命令管理:")
+    print(f"启动: {binary_path}")
+    print(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+    print(f"停止: pkill -f '{binary_path}'")
+    print(f"重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+    print("=" * 60)
+    print("提示: 如果链接不能访问，请自行开放端口")
+    print("配置信息已保存在 config.json 中, 可手动修改后重启生效")
 
+    # 【新增】自动生成说明.txt
+    help_file_path = os.path.join(binary_dir, "说明.txt")
+    if not os.path.exists(help_file_path):
+        help_content = f"""============================================================
+WzFileManager 启动成功!
+访问地址: http://{public_ip}:{port}
+默认登录密码: admin123
+============================================================
+【管理命令】
+--------------------
+1. Systemd 服务管理 (推荐):
+启动: systemctl start wzfilemanager
+停止: systemctl stop wzfilemanager
+重启: systemctl restart wzfilemanager
+状态: systemctl status wzfilemanager --no-pager
+--------------------
+2. 手动命令管理:
+启动: {binary_path}
+后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
+停止: pkill -f '{binary_path}'
+重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
+============================================================
+提示: 如果链接不能访问，请自行开放端口 (链接中的端口)
+      配置信息已保存在 config.json 中, 可手动修改后重启生效
+"""
+        try:
+            with open(help_file_path, 'w', encoding='utf-8') as f:
+                f.write(help_content)
+            print("✅ 已自动生成说明文档: 说明.txt")
+        except Exception as e:
+            print(f"⚠️ 生成说明文档失败: {str(e)}")
+
+    # 自动更新开机启动配置
     if getattr(sys, 'frozen', False):
         try:
             service_path = "/etc/systemd/system/wzfilemanager.service"
-            if not os.path.exists(service_path):
-                service_content = f"""[Unit]
+            service_content = f"""[Unit]
 Description=WzFileManager Service
 After=network.target
 
@@ -541,24 +605,32 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 """
+            need_update = True
+            if os.path.exists(service_path):
+                with open(service_path, 'r') as f:
+                    old_content = f.read()
+                if old_content == service_content:
+                    need_update = False
+            
+            if need_update:
                 with open(service_path, 'w') as f:
                     f.write(service_content)
-                os.system("systemctl daemon-reload")
-                os.system("systemctl enable wzfilemanager")
-                logger.info("✅ 已自动创建并启用开机自启服务 (wzfilemanager.service)")
+                os.system("systemctl daemon-reload >/dev/null 2>&1")
+                os.system("systemctl enable wzfilemanager >/dev/null 2>&1")
+                print("✅ 已启用开机自启服务 (/etc/systemd/system/wzfilemanager.service)")
         except Exception as e:
-            logger.warning(f"⚠️ 创建开机自启服务失败: {str(e)}")
+            print(f"⚠️ 创建或更新开机自启服务失败: {str(e)}")
 
     ssh_password = config.get("ssh", "password", default="")
     ssh_key_password = config.get("ssh", "key_password", default="")
     if config.get("ssh", "host") and (ssh_password or ssh_key_password):
         try:
             ok, msg = ssh.connect()
-            logger.info(f"SSH 自动连接: {msg}")
+            print(f"SSH 自动连接: {msg}")
         except Exception as e:
-            logger.warning(f"SSH 自动连接失败，请检查配置: {str(e)}")
+            print(f"SSH 自动连接失败，请检查配置: {str(e)}")
     else:
-        logger.info("未配置 SSH 密码或密钥，跳过自动连接。")
+        print("未配置 SSH 密码或密钥，跳过自动连接。")
 
     async def cleanup_loop():
         while True:
@@ -580,14 +652,15 @@ WantedBy=multi-user.target
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global is_port_in_use
     ssh.disconnect()
-    logger.info("WzFileManager 已停止")
+    if not is_port_in_use:
+        print("WzFileManager 已停止")
 
 if __name__ == "__main__":
     port = config.get("server", "port")
     host = config.get("server", "host", default="0.0.0.0")
     
-    # 【关键修复】如果端口未配置（None），自动分配一个随机端口
     if not port:
         import socket, random
         port_range = config.get("server", "port_range", default=[30000, 55000])
