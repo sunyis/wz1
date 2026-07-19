@@ -2226,13 +2226,34 @@ function openSearchItem() {
     loadFileList(targetPath);
 }
 
+// 单个删除
+async function deleteSingleSearchItem(path) {
+    var fileName = path.split('/').pop();
+    // 【关键修复】根据回收站状态显示对应提示
+    var msg = trashEnabled ? '确定将 ' + fileName + ' 移入回收站吗？' : '确定彻底删除 ' + fileName + ' 吗？';
+    var confirmed = await showConfirmModal('确认删除', msg);
+    if (!confirmed) return;
+    
+    await fetch('/api/files/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, permanent: !trashEnabled })
+    });
+    
+    // 重新搜索以实时更新列表
+    performSearch(); 
+    refreshList(); 
+}
+
 // 批量删除选中项
 async function deleteSearchItems() {
     if (searchSelectedPaths.size === 0) { 
         showAlert('请先选择要删除的项'); 
         return; 
     }
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + searchSelectedPaths.size + ' 个文件吗？');
+    var count = searchSelectedPaths.size;
+    // 【关键修复】根据回收站状态显示对应提示
+    var msg = trashEnabled ? '确定将选中的 ' + count + ' 个文件移入回收站吗？' : '确定彻底删除选中的 ' + count + ' 个文件吗？';
+    var confirmed = await showConfirmModal('确认删除', msg);
     if (!confirmed) return;
 
     for (var p of searchSelectedPaths) {
@@ -2241,21 +2262,10 @@ async function deleteSearchItems() {
             body: JSON.stringify({ path: p, permanent: !trashEnabled })
         });
     }
+    searchSelectedPaths.clear();
+    // 重新搜索以实时更新列表
     performSearch(); 
     refreshList(); 
-}
-
-// 单个删除
-async function deleteSingleSearchItem(path) {
-    var confirmed = await showConfirmModal('确认删除', '确定彻底删除 ' + path.split('/').pop() + ' 吗？');
-    if (!confirmed) return;
-    
-    await fetch('/api/files/delete', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path, permanent: !trashEnabled })
-    });
-    performSearch();
-    refreshList();
 }
 
 // ====== 占用分析 ======
