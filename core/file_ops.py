@@ -193,6 +193,8 @@ class FileManager:
 
     def restore(self, trash_id: str) -> Dict[str, Any]:
         trash_base = self._get_trash_base()
+        sftp = self._ensure_sftp()
+        if not sftp: return {"success": False, "msg": "SFTP 未连接"}
         
         if trash_id.startswith("root_"):
             filename = trash_id[5:]
@@ -229,10 +231,21 @@ class FileManager:
             target_dir = os.path.dirname(target_path)
             self.ssh.execute(f'mkdir -p "{target_dir}"')
             
-            ok_ls, out_ls, _ = self.ssh.execute(f'ls -A "{trash_dir}" | grep -v ".trash_info"')
-            if not ok_ls or not out_ls.strip(): return {"success": False, "msg": "回收站项目为空"}
+            # 【关键修复】使用 Python SFTP 原生遍历目录，防止缓存导致读取不到刚删除的文件
+            try:
+                files_in_trash = sftp.listdir(trash_dir)
+            except Exception as e:
+                return {"success": False, "msg": f"读取回收站目录失败: {str(e)}"}
+                
+            real_filename = None
+            for f in files_in_trash:
+                if f != ".trash_info":
+                    real_filename = f
+                    break
+                
+            if not real_filename: 
+                return {"success": False, "msg": "回收站项目为空"}
             
-            real_filename = out_ls.strip().split('\n')[0].strip()
             full_path_in_trash = f"{trash_dir}/{real_filename}"
             
             ok_mv, _, err_mv = self.ssh.execute(f'mv "{full_path_in_trash}" "{target_path}"')
@@ -241,6 +254,27 @@ class FileManager:
             self.ssh.execute(f'rm -rf "{trash_dir}"')
             return {"success": True, "msg": f"已还原到: {target_path}", "target_path": target_path}
 
+    def _get_dir_size(self, sftp, path: str) -> int:
+        """递归计算目录及其子目录的总大小"""
+        size = 0
+        try:
+            # 获取目录下所有文件和文件夹的属性
+            for attr in sftp.listdir_attr(path):
+                full_path = path.rstrip('/') + '/' + attr.filename
+                # 【关键修复】忽略 /proc/kcore 等虚拟文件，防止计算出错
+                if attr.filename == "kcore" or "proc/kcore" in full_path:
+                    continue
+                if stat.S_ISDIR(attr.st_mode):
+                    # 如果是子目录，递归计算
+                    size += self._get_dir_size(sftp, full_path)
+                else:
+                    # 如果是文件，累加大小
+                    size += attr.st_size
+        except Exception:
+            # 遇到无权限访问等异常时，忽略并返回当前已计算的大小
+            pass
+        return size
+
     def get_file_info(self, path: str) -> Dict[str, Any]:
         sftp = self._ensure_sftp()
         if not sftp: return {"success": False, "msg": "SFTP 未连接"}
@@ -248,26 +282,22 @@ class FileManager:
             path = self._normalize_path(path)
             stat_info = sftp.stat(path)
             
+            # 1. 判断是否为目录（双重校验，防止 st_mode 解析失败）
             is_dir = stat.S_ISDIR(stat_info.st_mode)
-            is_empty_dir = False
             if not is_dir:
                 try:
-                    dir_list = sftp.listdir(path)
+                    sftp.listdir(path)
                     is_dir = True
-                    is_empty_dir = (len(dir_list) == 0) # 检查是否为空目录
                 except IOError:
                     is_dir = False
 
+            # 2. 计算大小
             if is_dir:
-                if is_empty_dir:
-                    size = 0 # 空文件夹直接返回 0
-                else:
-                    # 使用 du -sb 命令直接获取字节大小，比递归快百倍
-                    ok_du, out_du, _ = self.ssh.execute(f'du -sb "{path}" 2>/dev/null')
-                    size = int(out_du.split()[0]) if ok_du and out_du else 0
+                size = self._get_dir_size(sftp, path)
             else:
                 size = stat_info.st_size
 
+            # 获取用户组名称 (通过执行 stat 命令获取)
             group_name = ""
             ok_g, out_g, _ = self.ssh.execute(f'stat -c "%G" "{path}" 2>/dev/null')
             if ok_g:
@@ -284,7 +314,7 @@ class FileManager:
                     "octal_permissions": oct(stat_info.st_mode & 0o777),
                     "mtime_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat_info.st_mtime)),
                     "is_dir": is_dir,
-                    "group": group_name
+                    "group": group_name  # 新增：返回当前用户组
                 }
             }
         except Exception as e: 
@@ -295,14 +325,16 @@ class FileManager:
         sftp = self._ensure_sftp()
         if not sftp: return {"success": False, "msg": "SFTP 未连接"}
         try:
+            # 以二进制模式读取，防止不同编码导致乱码
             with sftp.open(path, 'rb') as f: content = f.read()
+            # 自动尝试常见编码，确保不乱码
             try:
                 text = content.decode('utf-8')
             except UnicodeDecodeError:
                 try:
                     text = content.decode('gbk')
                 except UnicodeDecodeError:
-                    text = content.decode('latin-1')
+                    text = content.decode('latin-1') # 最终兜底
             return {"success": True, "content": text}
         except Exception as e: return {"success": False, "msg": self._translate_error(e)}
 
@@ -349,6 +381,7 @@ class FileManager:
         except Exception as e: return {"success": False, "msg": str(e)}
 
     def set_permission(self, path: str, perm: str, group: str, recursive: bool) -> Dict[str, Any]:
+        """同时修改权限和用户组，支持递归"""
         import re
         if not path:
             return {"success": False, "msg": "路径不能为空"}
@@ -357,11 +390,13 @@ class FileManager:
         r_flag = "-R" if recursive else ""
         cmds = []
         
+        # 处理权限修改
         if perm:
             if not re.match(r'^[0-7]{3,4}$', perm):
                 return {"success": False, "msg": "权限格式错误，应为 3-4 位数字"}
             cmds.append(f'chmod {r_flag} {perm} "{path}"')
             
+        # 处理用户组修改
         if group:
             if not re.match(r'^[a-zA-Z0-9_\.\-]+$', group):
                 return {"success": False, "msg": "用户组名称包含非法字符"}
@@ -370,10 +405,12 @@ class FileManager:
         if not cmds:
             return {"success": False, "msg": "没有需要修改的项"}
             
+        # 依次执行命令
         for cmd in cmds:
             ok, out, err = self.ssh.execute(cmd)
             if not ok:
                 err_msg = err or f"执行失败: {cmd}"
+                # 将常见的 Linux 错误翻译为中文
                 if 'invalid group' in err_msg:
                     return {"success": False, "msg": f"修改失败：系统中不存在名为 '{group}' 的用户组"}
                 if 'Operation not permitted' in err_msg:
@@ -403,6 +440,7 @@ class FileManager:
         sftp = self._ensure_sftp()
         if not sftp: return {"success": False, "msg": "SFTP 未连接"}
         
+        # 使用 GNU find 命令，-maxdepth 1 表示不递归，去掉则递归
         depth = "-maxdepth 1" if not recursive else "-maxdepth 10"
         cmd = f'find "{path}" {depth} -name "*{keyword}*" -printf "%y|%m|%s|%T@|%p\\n" 2>/dev/null | head -100'
         
@@ -436,10 +474,9 @@ class FileManager:
         return {"success": True, "items": items}
 
     def get_disk_usage(self, path: str = "/") -> Dict[str, Any]:
-        # 【关键修复】必须使用 df 命令，瞬间读取物理磁盘信息，绝不能用 du
-        ok_df, out_df, _ = self.ssh.execute(f'df -B1 "{path}" | tail -n 1')
-        if ok_df and out_df:
-            parts = out_df.strip().split()
+        ok, out, err = self.ssh.execute('df -B1 / | tail -n 1')
+        if ok:
+            parts = out.strip().split()
             if len(parts) >= 6:
                 return {
                     "success": True,
@@ -452,7 +489,7 @@ class FileManager:
                         "mount": parts[5]
                     }
                 }
-        return {"success": False, "msg": "无法获取磁盘信息"}
+        return {"success": False, "msg": err or "无法获取磁盘信息"}
 
     def get_dir_size(self, path: str) -> Dict[str, Any]:
         sftp = self._ensure_sftp()
@@ -460,22 +497,9 @@ class FileManager:
             return {"success": False, "msg": "SFTP 未连接"}
         try:
             path = self._normalize_path(path)
-            
-            # 先检查是否为空目录，空目录直接返回 0，防止 du 算入 4kb 目录块
-            try:
-                if len(sftp.listdir(path)) == 0:
-                    return {"success": True, "size": self._format_size(0)}
-            except:
-                pass
-            
-            # 使用 du -sb 命令计算
-            ok, out, _ = self.ssh.execute(f'du -sb "{path}" 2>/dev/null')
-            size = 0
-            if ok and out:
-                try:
-                    size = int(out.split()[0])
-                except:
-                    pass
+            # 调用递归方法计算真实大小，空文件夹将返回 0
+            size = self._get_dir_size(sftp, path)
+            # 为了和原接口返回格式保持一致，这里格式化为字符串返回
             return {"success": True, "size": self._format_size(size)}
         except Exception as e:
             return {"success": False, "msg": str(e)}
@@ -492,54 +516,27 @@ class FileManager:
             return {"success": False, "msg": "SFTP 未连接"}
             
         try:
-            entries = sftp.listdir_attr(path)
-            
-            # 2. 使用 du -sB1 一次性获取第一层目录大小，并排除虚拟目录
-            excludes = ""
-            if path == "/":
-                excludes = "--exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/snap"
-            
-            cmd = f'du -sB1 {excludes} "{path}"/* 2>/dev/null'
-            ok_du, out_du, _ = self.ssh.execute(cmd)
-            
-            size_map = {}
-            if ok_du and out_du:
-                for line in out_du.strip().split('\n'):
-                    parts = line.split('\t', 1)
-                    if len(parts) == 2:
-                        try:
-                            size_val = int(parts[0])
-                            name = os.path.basename(parts[1].strip())
-                            size_map[name] = size_val
-                        except ValueError:
-                            pass
-            
+            # 获取当前目录总大小（使用递归方法，排除目录本身 4kb 占用）
+            total_size = self._get_dir_size(sftp, path)
             items = []
-            total_size = 0 # 直接累加列表项的大小作为总大小，速度最快
             
-            for entry in entries:
+            # 遍历当前目录下的所有文件和文件夹
+            for entry in sftp.listdir_attr(path):
                 item_path = f"{path}/{entry.filename}"
                 
+                # 【关键修复】直接跳过 kcore 虚拟文件，不显示在列表中
                 if entry.filename == "kcore" or "proc/kcore" in item_path:
                     continue
                     
                 is_dir = stat.S_ISDIR(entry.st_mode)
                 
                 if is_dir:
-                    try:
-                        is_empty = len(sftp.listdir(item_path)) == 0
-                    except:
-                        is_empty = False
-                    
-                    if is_empty:
-                        size = 0
-                    else:
-                        size = size_map.get(entry.filename, 0)
+                    # 获取子目录真实大小（空文件夹返回 0）
+                    size = self._get_dir_size(sftp, item_path)
                 else:
+                    # 文件直接获取大小
                     size = entry.st_size
                     
-                total_size += size
-                
                 items.append({
                     "name": entry.filename,
                     "path": item_path,
@@ -590,6 +587,7 @@ class FileManager:
         ok, out, err = self.ssh.execute(cmd)
         if ok:
             return {"success": True, "msg": "压缩成功", "path": output}
+        # 【关键修改】调用 _translate_error 翻译错误信息
         return {"success": False, "msg": self._translate_error(err or "压缩失败")}
 
     def extract(self, file_path: str, target_dir: str = None) -> Dict[str, Any]:
@@ -621,6 +619,7 @@ class FileManager:
         ok, out, err = self.ssh.execute(cmd)
         if ok:
             return {"success": True, "msg": "解压成功"}
+        # 【关键修改】调用 _translate_error 翻译错误信息
         return {"success": False, "msg": self._translate_error(err or "解压失败")}
 
     def _format_permissions(self, mode: int) -> str:
