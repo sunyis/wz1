@@ -537,58 +537,65 @@ async def startup_event():
     binary_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
     binary_dir = os.path.dirname(binary_path)
     
-    print("=" * 60)
-    print("【管理命令】")
-    print("-" * 20)
-    print("1. Systemd 服务管理 (推荐):")
-    print("启动: systemctl start wzfilemanager")
-    print("停止: systemctl stop wzfilemanager")
-    print("重启: systemctl restart wzfilemanager")
-    print("状态: systemctl status wzfilemanager --no-pager")
-    print("-" * 20)
-    print("2. 手动命令管理:")
-    print(f"启动: {binary_path}")
-    print(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
-    print(f"停止: pkill -f '{binary_path}'")
-    print(f"重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
-    print("=" * 60)
-    print("提示: 如果链接不能访问，请自行开放端口")
-    print("配置信息已保存在 config.json 中, 可手动修改后重启生效")
-
-    # 【新增】自动生成说明.txt
-    help_file_path = os.path.join(binary_dir, "说明.txt")
-    if not os.path.exists(help_file_path):
-        help_content = f"""============================================================
-WzFileManager 启动成功!
-访问地址: http://{public_ip}:{port}
-默认登录密码: admin123
-============================================================
-【管理命令】
---------------------
-1. Systemd 服务管理 (推荐):
-启动: systemctl start wzfilemanager
-停止: systemctl stop wzfilemanager
-重启: systemctl restart wzfilemanager
-状态: systemctl status wzfilemanager --no-pager
---------------------
-2. 手动命令管理:
-启动: {binary_path}
-后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
-停止: pkill -f '{binary_path}'
-重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
-============================================================
-提示: 如果链接不能访问，请自行开放端口 (链接中的端口)
-      配置信息已保存在 config.json 中, 可手动修改后重启生效
-"""
+    # 自动判断系统并生成对应的开机启动配置
+    is_openwrt = os.path.exists("/etc/openwrt_release")
+    
+    if is_openwrt:
+        # OpenWrt (init.d) 系统
         try:
-            with open(help_file_path, 'w', encoding='utf-8') as f:
-                f.write(help_content)
-            print("✅ 已自动生成说明文档: 说明.txt")
-        except Exception as e:
-            print(f"⚠️ 生成说明文档失败: {str(e)}")
+            initd_path = "/etc/init.d/wzfilemanager"
+            initd_content = f"""#!/bin/sh /etc/rc.common
 
-    # 自动更新开机启动配置
-    if getattr(sys, 'frozen', False):
+START=99
+STOP=01
+PIDFILE="/var/run/wzfilemanager.pid"
+LOGFILE="/var/log/wzfilemanager.log"
+
+start() {{
+    echo "Starting WzFileManager process"
+    nohup {binary_path} >> "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+}}
+
+stop() {{
+    echo "Stopping WzFileManager process"
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE")
+        if ps | grep -v grep | grep "$pid" > /dev/null; then
+            kill "$pid"
+            sleep 2
+            if ps | grep -v grep | grep "$pid" > /dev/null; then
+                kill -9 "$pid"
+            fi
+            rm -f "$PIDFILE"
+        fi
+    fi
+}}
+"""
+            with open(initd_path, 'w') as f:
+                f.write(initd_content)
+            os.chmod(initd_path, 0o755)
+            os.system("/etc/init.d/wzfilemanager enable >/dev/null 2>&1")
+            print("✅ 已自动创建并启用开机自启服务 (/etc/init.d/wzfilemanager)")
+        except Exception as e:
+            print(f"⚠️ 创建 OpenWrt 开机自启服务失败: {str(e)}")
+            
+        print("=" * 60)
+        print("【管理命令】")
+        print("-" * 20)
+        print("1. OpenWrt 服务管理 (已支持开机自启):")
+        print("启动: /etc/init.d/wzfilemanager start")
+        print("停止: /etc/init.d/wzfilemanager stop")
+        print("重启: /etc/init.d/wzfilemanager restart")
+        print("状态: /etc/init.d/wzfilemanager status")
+        print("-" * 20)
+        print("2. 手动命令管理:")
+        print(f"启动: {binary_path}")
+        print(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+        print(f"停止: pkill -f '{binary_path}'")
+        print("=" * 60)
+    else:
+        # Systemd 系统 (Ubuntu/CentOS/Debian 等)
         try:
             service_path = "/etc/systemd/system/wzfilemanager.service"
             service_content = f"""[Unit]
@@ -617,9 +624,59 @@ WantedBy=multi-user.target
                     f.write(service_content)
                 os.system("systemctl daemon-reload >/dev/null 2>&1")
                 os.system("systemctl enable wzfilemanager >/dev/null 2>&1")
-                print("✅ 已启用开机自启服务 (/etc/systemd/system/wzfilemanager.service)")
+                print("✅ 已自动更新并启用开机自启服务 (wzfilemanager.service)")
         except Exception as e:
             print(f"⚠️ 创建或更新开机自启服务失败: {str(e)}")
+
+        print("=" * 60)
+        print("【管理命令】")
+        print("-" * 20)
+        print("1. Systemd 服务管理 (推荐，已支持开机自启):")
+        print("启动: systemctl start wzfilemanager")
+        print("停止: systemctl stop wzfilemanager")
+        print("重启: systemctl restart wzfilemanager")
+        print("状态: systemctl status wzfilemanager --no-pager")
+        print("-" * 20)
+        print("2. 手动命令管理:")
+        print(f"启动: {binary_path}")
+        print(f"后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &")
+        print(f"停止: pkill -f '{binary_path}'")
+        print("=" * 60)
+
+    print("提示: 如果链接不能访问，请自行开放链接中端口 (软路由配置需端口映射)")
+    print("配置信息已保存在 config.json 中, 可手动修改后重启生效")
+
+    # 自动生成说明.txt
+    help_file_path = os.path.join(binary_dir, "说明.txt")
+    if not os.path.exists(help_file_path):
+        help_content = f"""============================================================
+WzFileManager 启动成功!
+访问地址: http://{public_ip}:{port}
+默认登录密码: admin123
+============================================================
+【管理命令】
+--------------------
+1. Systemd 服务管理 (推荐):
+启动: systemctl start wzfilemanager
+停止: systemctl stop wzfilemanager
+重启: systemctl restart wzfilemanager
+状态: systemctl status wzfilemanager --no-pager
+--------------------
+2. 手动命令管理:
+启动: {binary_path}
+后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
+停止: pkill -f '{binary_path}'
+重启: pkill -f '{binary_path}'; cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
+============================================================
+提示: 如果链接不能访问，请自行开放端口 (链接中的端口)
+配置信息已保存在 config.json 中, 可手动修改后重启生效
+"""
+        try:
+            with open(help_file_path, 'w', encoding='utf-8') as f:
+                f.write(help_content)
+            print("✅ 已自动生成说明文档: 说明.txt")
+        except Exception as e:
+            print(f"⚠️ 生成说明文档失败: {str(e)}")
 
     ssh_password = config.get("ssh", "password", default="")
     ssh_key_password = config.get("ssh", "key_password", default="")
