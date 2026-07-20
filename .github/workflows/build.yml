@@ -8,9 +8,9 @@ env:
   CUSTOM_VERSION: "1.0.0"
 
 jobs:
-  # 任务 1：编译 Linux 多架构二进制文件
+  # 任务 1：编译 Linux 常规二进制文件 (适用于 Ubuntu/CentOS/Debian 等标准系统)
   build-linux-binary:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -34,21 +34,16 @@ jobs:
           echo "使用 Ubuntu 22.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
           docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:22.04 bash -c "
             set -e
-            # 清理缓存并加入重试机制，防止 ARM 架构下 apt-get update 偶发失败
             rm -rf /var/lib/apt/lists/*
             apt-get update || (sleep 5 && apt-get update) || (sleep 10 && apt-get update)
-            
-            # 启用 universe 和 multiverse 源，确保能装上 p7zip-full
             sed -i 's/^# deb/deb/' /etc/apt/sources.list || true
             apt-get update || true
             
-            # 【关键修复】仅 amd64 架构安装 rar 包，arm64/armv7 跳过
             RAR_PKG=''
             if [ '${{ matrix.arch }}' = 'amd64' ]; then
               RAR_PKG='rar'
             fi
             
-            # 安装基础环境及压缩工具，补全二进制运行必须的底层 C/C++ 运行库
             apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev libc6 libgcc-s1 libstdc++6 zlib1g
             
             python3 -m venv venv
@@ -69,6 +64,55 @@ jobs:
         with:
           name: binary-linux-${{ matrix.arch }}
           path: wzfilemanager-linux-${{ matrix.arch }}
+
+  # 任务 1.5：编译 Linux musl 兼容版二进制 (专供 OpenWrt/Alpine 软路由系统)
+  build-linux-musl-binary:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Compile binary in Alpine 3.12 (musl)
+        timeout-minutes: 30
+        run: |
+          echo "使用 Alpine 3.12 (musl) 容器编译 ${{ matrix.arch }} 架构的兼容版二进制..."
+          # 使用 alpine:3.12 镜像，自带老版 musl 1.1，完美避开 pwritev2 符号报错
+          docker run --rm --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/work -w /work alpine:3.12 sh -c '
+            set -e
+            # 替换为阿里云源加速
+            sed -i "s/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g" /etc/apk/repositories
+            
+            # 安装 Python3 和编译环境 (Alpine 不支持 rar 包，跳过)
+            apk add --no-cache python3 python3-dev py3-pip gcc musl-dev libffi-dev openssl-dev build-base
+            
+            pip3 install --upgrade pip
+            pip3 install --prefer-binary -r requirements.txt
+            pip3 install --prefer-binary paramiko pyinstaller
+            
+            pyinstaller --onefile --add-data "web:web" --add-data "core:core" --add-data "config.json:." main.py
+            
+            mv dist/main wzfilemanager-linux-${{ matrix.arch }}-musl
+            chmod +x wzfilemanager-linux-${{ matrix.arch }}-musl
+          '
+
+      - name: Upload musl binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-linux-${{ matrix.arch }}-musl
+          path: wzfilemanager-linux-${{ matrix.arch }}-musl
 
   # 任务 2：编译 Windows (Win7/Win10, 32位/64位)
   build-windows-exe:
