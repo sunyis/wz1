@@ -1,4 +1,4 @@
-name: Build Multi-Arch Binary and Docker
+name: Build, Package and Push Multi-Arch Docker
 
 on:
   workflow_dispatch: # 允许在 GitHub 页面手动点击触发
@@ -8,11 +8,11 @@ env:
   CUSTOM_VERSION: "1.0.0"
 
 jobs:
-  # 任务 1：编译 Linux 常规二进制文件 (适用于 Ubuntu/CentOS/Debian 等标准系统)
+  # 任务 1：编译 Linux 多架构二进制文件
   build-linux-binary:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
-      fail-fast: false
+      fail-fast: false # 关闭快速失败
       matrix:
         include:
           - arch: amd64
@@ -29,23 +29,21 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Compile binary in Ubuntu 22.04
-        timeout-minutes: 30
+        timeout-minutes: 20
         run: |
-          echo "使用 Ubuntu 22.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
-          docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:22.04 bash -c "
+          echo "使用 Ubuntu 20.04 容器编译 ${{ matrix.arch }} 架构的二进制文件..."
+          # 【关键修复】将 ubuntu:latest 改为 ubuntu:22.04，避免 24.04 的 glibc 过新导致兼容性报错
+          docker run --rm --platform ${{ matrix.platform }} -e DEBIAN_FRONTEND=noninteractive -v ${{ github.workspace }}:/work -w /work ubuntu:20.04 bash -c "
             set -e
-            rm -rf /var/lib/apt/lists/*
-            apt-get update || (sleep 5 && apt-get update) || (sleep 10 && apt-get update)
+            apt-get update
+            # 启用 universe 和 multiverse 源，确保能装上 p7zip-full 和 rar
             sed -i 's/^# deb/deb/' /etc/apt/sources.list || true
             apt-get update || true
             
-            RAR_PKG=''
-            if [ '${{ matrix.arch }}' = 'amd64' ]; then
-              RAR_PKG='rar'
-            fi
+            # 安装基础环境及压缩工具，补全二进制运行必须的底层 C/C++ 运行库
+            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar rar curl build-essential libffi-dev libssl-dev libc6 libgcc-s1 libstdc++6 zlib1g
             
-            apt-get install -y python3 python3-pip python3-venv zip tar p7zip-full unrar \$RAR_PKG curl build-essential libffi-dev libssl-dev libc6 libgcc-s1 libstdc++6 zlib1g
-            
+            # 创建并激活 Python 虚拟环境，绕过 PEP 668 限制
             python3 -m venv venv
             source venv/bin/activate
             
@@ -64,20 +62,10 @@ jobs:
         with:
           name: binary-linux-${{ matrix.arch }}
           path: wzfilemanager-linux-${{ matrix.arch }}
-
-  # 任务 1.5：编译 Linux musl 兼容版二进制 (专供 OpenWrt/Alpine 软路由系统)
-  build-linux-musl-binary:
+          
+  # 任务 1.5：编译 OpenWrt/Alpine (musl) 专属兼容版二进制 (仅 arm64)
+  build-linux-musl-arm64:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-          - arch: arm64
-            platform: linux/arm64
-          - arch: armv7
-            platform: linux/arm/v7
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -88,32 +76,35 @@ jobs:
       - name: Compile binary in Alpine 3.12 (musl)
         timeout-minutes: 30
         run: |
-          echo "使用 Alpine 3.12 (musl) 容器编译 ${{ matrix.arch }} 架构的兼容版二进制..."
-          # 使用 alpine:3.12 镜像，自带老版 musl 1.1，完美避开 pwritev2 符号报错
-          docker run --rm --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/work -w /work alpine:3.12 sh -c '
+          echo "使用 Alpine 3.12 (musl) 容器编译 arm64 架构的兼容版二进制..."
+          docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/work -w /work alpine:3.12 sh -c '
             set -e
-            # 替换为阿里云源加速
+            # 替换为阿里云 Alpine 3.12 源，加速下载
             sed -i "s/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g" /etc/apk/repositories
             
-            # 安装 Python3 和编译环境 (Alpine 不支持 rar 包，跳过)
+            # 安装 Python3 和编译环境
             apk add --no-cache python3 python3-dev py3-pip gcc musl-dev libffi-dev openssl-dev build-base
             
-            pip3 install --upgrade pip
-            pip3 install --prefer-binary -r requirements.txt
-            pip3 install --prefer-binary paramiko pyinstaller
+            # 安装 Python 依赖
+            pip3 install --upgrade pip -q
+            pip3 install --prefer-binary -r requirements.txt -q
+            # 【关键修复】固定 PyInstaller 为 5.13.2，避免新版的 PKG archive bug
+            pip3 install --prefer-binary paramiko pyinstaller==5.13.2 -q
             
+            # 打包二进制
             pyinstaller --onefile --add-data "web:web" --add-data "core:core" --add-data "config.json:." main.py
             
-            mv dist/main wzfilemanager-linux-${{ matrix.arch }}-musl
-            chmod +x wzfilemanager-linux-${{ matrix.arch }}-musl
+            mv dist/main wzfilemanager-linux-arm64-musl
+            chmod +x wzfilemanager-linux-arm64-musl
+            rm -rf build dist *.spec
           '
 
       - name: Upload musl binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-linux-${{ matrix.arch }}-musl
-          path: wzfilemanager-linux-${{ matrix.arch }}-musl
-
+          name: binary-linux-arm64-musl
+          path: wzfilemanager-linux-arm64-musl
+          
   # 任务 2：编译 Windows (Win7/Win10, 32位/64位)
   build-windows-exe:
     runs-on: windows-latest
@@ -152,9 +143,17 @@ jobs:
           name: binary-windows-${{ matrix.arch }}
           path: wzfilemanager-windows-${{ matrix.arch }}.exe
 
-  # 任务 3：编译 macOS (仅 Apple Silicon M1/M2)
+  # 任务 3：编译 macOS (Intel 和 Apple Silicon)
   build-macos-binary:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: intel
+            os: macos-13
+          - arch: arm64
+            os: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -172,118 +171,85 @@ jobs:
 
       - name: Build macOS binary with PyInstaller
         run: |
-          pyinstaller --onefile --add-data="web:web" --add-data="core:core" --add-data="config.json:." main.py
-          mv dist/main wzfilemanager-macos-arm64
-          chmod +x wzfilemanager-macos-arm64
+          pyinstaller --onefile --add-data "web:web" --add-data "core:core" --add-data "config.json:." main.py
+          mv dist/main wzfilemanager-macos-${{ matrix.arch }}
+          chmod +x wzfilemanager-macos-${{ matrix.arch }}
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-macos-arm64
-          path: wzfilemanager-macos-arm64
+          name: binary-macos-${{ matrix.arch }}
+          path: wzfilemanager-macos-${{ matrix.arch }}
 
-  # 任务 4：分别打包 3 个独立架构的 Docker 镜像
-  build-single-arch-docker:
-    needs: [build-linux-binary]
+  # 任务 4：下载 Linux 二进制并打包推送多架构 Docker 镜像
+  build-and-push-docker:
+    needs: [build-linux-binary, build-windows-exe, build-macos-binary]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-          - arch: arm64
-            platform: linux/arm64
-          - arch: armv7
-            platform: linux/arm/v7
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download binary artifact
+      - name: Download amd64 binary
         uses: actions/download-artifact@v4
-        with:
-          name: binary-linux-${{ matrix.arch }}
-          path: binaries
+        with: { name: binary-linux-amd64, path: binaries }
 
-      - name: Prepare Docker context
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with: { name: binary-linux-arm64, path: binaries }
+
+      - name: Download armv7 binary
+        uses: actions/download-artifact@v4
+        with: { name: binary-linux-armv7, path: binaries }
+
+      - name: Prepare Docker context and Entrypoint
         run: |
-          cat << 'EOF' > binaries/Dockerfile
-          FROM ubuntu:22.04
-          ENV TZ=Asia/Shanghai
-          ENV DEBIAN_FRONTEND=noninteractive
-          WORKDIR /opt/wzfilemanager
-
-          # 启用 universe 和 multiverse 源，并为备用下载准备 wget 和 xz-utils
-          RUN sed -i 's/^# deb/deb/' /etc/apt/sources.list || true && \
-              apt-get update && \
-              apt-get install -y --no-install-recommends \
-              wget xz-utils zip tar openssh-client bash tzdata \
-              libc6 libgcc-s1 libstdc++6 libffi8 libssl3 zlib1g && \
-              \
-              # 1. 安装 7z: apt 优先，失败则从 GitHub 下载官方全架构预编译包
-              (apt-get install -y --no-install-recommends p7zip-full || ( \
-                  echo "⚠️ apt 安装 p7zip-full 失败，尝试从 GitHub 下载..."; \
-                  ARCH=$(dpkg --print-architecture); \
-                  if [ "$ARCH" = "amd64" ]; then SEVENZ_URL="https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-x64.tar.xz"; \
-                  elif [ "$ARCH" = "arm64" ]; then SEVENZ_URL="https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-arm64.tar.xz"; \
-                  elif [ "$ARCH" = "armhf" ]; then SEVENZ_URL="https://github.com/ip7z/7zip/releases/download/24.08/7z2408-linux-arm.tar.xz"; \
-                  else SEVENZ_URL=""; fi; \
-                  if [ -n "$SEVENZ_URL" ]; then \
-                      wget --no-check-certificate -q -O /tmp/7z.tar.xz "$SEVENZ_URL" && \
-                      mkdir -p /tmp/7z && tar -xf /tmp/7z.tar.xz -C /tmp/7z && \
-                      cp /tmp/7z/7zzs /usr/local/bin/7z && chmod +x /usr/local/bin/7z && \
-                      rm -rf /tmp/7z*; \
-                  fi \
-              ) || true) && \
-              \
-              # 2. 安装 unrar: apt 优先，失败则从 RARLAB 下载 (仅 amd64 提供备用)
-              (apt-get install -y --no-install-recommends unrar || ( \
-                  echo "⚠️ apt 安装 unrar 失败，尝试从 RARLAB 下载..."; \
-                  ARCH=$(dpkg --print-architecture); \
-                  if [ "$ARCH" = "amd64" ]; then RAR_URL="http://www.rarlab.com/rar/rarlinux-x64-723.tar.gz"; \
-                  else RAR_URL=""; fi; \
-                  if [ -n "$RAR_URL" ]; then \
-                      wget --no-check-certificate -q -O /tmp/rar.tar.gz "$RAR_URL" && \
-                      tar -xzf /tmp/rar.tar.gz -C /tmp && \
-                      cp /tmp/rar/unrar /usr/local/bin/ && chmod +x /usr/local/bin/unrar && \
-                      rm -rf /tmp/rar*; \
-                  fi \
-              ) || true) && \
-              \
-              # 3. 安装 rar: 全架构尝试 apt 安装，失败则从 RARLAB 下载 (仅 amd64)
-              (apt-get install -y --no-install-recommends rar || ( \
-                  echo "⚠️ apt 安装 rar 失败，尝试从 RARLAB 下载..."; \
-                  ARCH=$(dpkg --print-architecture); \
-                  if [ "$ARCH" = "amd64" ]; then RAR_URL="http://www.rarlab.com/rar/rarlinux-x64-723.tar.gz"; \
-                  else RAR_URL=""; fi; \
-                  if [ -n "$RAR_URL" ]; then \
-                      wget --no-check-certificate -q -O /tmp/rar.tar.gz "$RAR_URL" && \
-                      tar -xzf /tmp/rar.tar.gz -C /tmp && \
-                      cp /tmp/rar/rar /usr/local/bin/ && chmod +x /usr/local/bin/rar && \
-                      rm -rf /tmp/rar*; \
-                  fi \
-              ) || true) && \
-              \
-              apt-get purge -y --auto-remove wget xz-utils && \
-              rm -rf /var/lib/apt/lists/* && \
-              ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && \
-              echo ${TZ} > /etc/timezone
-
-          COPY wzfilemanager-linux-${{ matrix.arch }} /opt/wzfilemanager/wzfilemanager
-          RUN chmod +x /opt/wzfilemanager/wzfilemanager
-
-          COPY start.sh /start.sh
-          RUN chmod +x /start.sh
-
-          EXPOSE 36688
-          VOLUME ["/opt/wzfilemanager/data"]
-          CMD ["/start.sh"]
+          chmod +x binaries/wzfilemanager-linux-*
+          
+          cat << 'EOF' > binaries/entrypoint.sh
+          #!/bin/bash
+          ARCH=$(uname -m)
+          case "$ARCH" in
+              x86_64)  BINARY="/app/wzfilemanager-linux-amd64" ;;
+              aarch64) BINARY="/app/wzfilemanager-linux-arm64" ;;
+              armv7l)  BINARY="/app/wzfilemanager-linux-armv7" ;;
+              *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
+          esac
+          echo "Starting WzFileManager for $ARCH..."
+          exec "$BINARY"
           EOF
+          chmod +x binaries/entrypoint.sh
 
-          # 直接将仓库根目录的 start.sh 复制到 binaries 目录，供 Docker 打包使用
-          cp start.sh binaries/start.sh
-          chmod +x binaries/start.sh
+          # 生成 Dockerfile，适配 Ubuntu 24.04 的 7zip 包，并下载官方 rar
+          cat << 'EOF' > Dockerfile
+          FROM ubuntu:latest
+          ENV DEBIAN_FRONTEND=noninteractive
+          WORKDIR /app
+          COPY . /app/
+          
+          # 安装 24.04 的新包 7zip，创建 7z 软链接，并从官方下载全架构 rar
+          RUN apt-get update && \
+              apt-get install -y wget zip tar 7zip --no-install-recommends && \
+              ln -s /usr/bin/7zz /usr/bin/7z && \
+              \
+              ARCH=$(dpkg --print-architecture) && \
+              if [ "$ARCH" = "amd64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-x64-7.0.9.tar.gz"; \
+              elif [ "$ARCH" = "arm64" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-aarch64-7.0.9.tar.gz"; \
+              elif [ "$ARCH" = "armhf" ]; then RAR_URL="https://www.rarlab.com/rar/rarlinux-arm-7.0.9.tar.gz"; \
+              else RAR_URL=""; fi && \
+              \
+              if [ -n "$RAR_URL" ]; then \
+                  wget -q -O /tmp/rar.tar.gz "$RAR_URL" && \
+                  tar -xzf /tmp/rar.tar.gz -C /tmp && \
+                  cp /tmp/rar/rar /usr/local/bin/ && \
+                  cp /tmp/rar/unrar /usr/local/bin/ && \
+                  chmod +x /usr/local/bin/rar /usr/local/bin/unrar && \
+                  rm -rf /tmp/rar*; \
+              fi && \
+              \
+              rm -rf /var/lib/apt/lists/*
+              
+          RUN chmod +x /app/wzfilemanager-linux-* /app/entrypoint.sh
+          RUN mkdir -p /app/logs
+          EXPOSE 36688
+          ENTRYPOINT ["/app/entrypoint.sh"]
+          EOF
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -297,37 +263,18 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push single-arch image
+      - name: Build and push multi-arch Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./binaries
-          file: ./binaries/Dockerfile
-          platforms: ${{ matrix.platform }}
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-${{ matrix.arch }}
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest-${{ matrix.arch }}
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}
         continue-on-error: true
 
-  # 任务 5：合并多架构镜像清单
-  build-multi-arch-manifest:
-    needs: [build-single-arch-docker]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Create and push multi-arch manifest
-        run: |
-          docker buildx imagetools create -t ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }} \
-          -t ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:latest \
-          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-amd64 \
-          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-arm64 \
-          ${{ secrets.DOCKER_USERNAME }}/${{ env.PROJECT }}:${{ env.CUSTOM_VERSION }}-armv7
-        continue-on-error: true
+      - name: Notify Docker push status
+        if: failure()
+        run: echo "⚠️ Docker 推送失败，但不影响已编译好的二进制文件。请前往 Artifacts 下载。"
