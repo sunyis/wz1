@@ -183,7 +183,7 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
 .col-name { width: 50%; }  /* 文件名列加宽 */
 .col-size { width: 100px; }
 .col-time { width: 140px; }
-.col-perms { width: 110px; }  /* 权限列缩短 */
+.col-perms { width: 135px; text-align: left; padding-right: 30px; white-space: nowrap; }  /* 权限列缩短 */
 .col-actions { width: 190px; text-align: right; padding-right: 30px; }
 
 .file-icon { font-size: 18px; margin-right: 8px; vertical-align: middle; }
@@ -193,7 +193,7 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
 .loading { text-align: center; padding: 40px; color: var(--text-light); }
 
 /* 操作按钮 */
-.action-btn { padding: 3px 8px; border: 1px solid var(--border); background: #fff; border-radius: 3px; cursor: pointer; font-size: 12px; margin-left: 3px; }
+.action-btn { padding: 5px 9px; border: 1px solid var(--border); background: #fff; border-radius: 4px; cursor: pointer; font-size: 14px; margin-left: 3px; }
 .action-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
 .action-btn.danger:hover { background: var(--danger); border-color: var(--danger); }
 
@@ -411,9 +411,123 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
     border-top: 1px solid #e8e8e8;
     background-color: #fafafa;
 }
-/* 确保提示弹窗和确认弹窗始终在最顶层，不被设置窗口遮挡 */
-#alertModal { z-index: 1006 !important; }
-#confirmModal { z-index: 1006 !important; }
+/* 收藏夹删除模式的红色 x 图标 */
+.fav-delete-icon {
+    color: var(--danger);
+    font-weight: bold;
+    font-size: 16px; /* 加大加粗 */
+    cursor: pointer;
+    margin-left: 10px;
+    flex-shrink: 0;
+    line-height: 1;
+}
+/* 【优化缩放拖影】CodeMirror 硬件加速 */
+.CodeMirror {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+}
+/* ====== 分享功能样式提取 ====== */
+/* Z-index 层级管理：提示弹窗 > 分享子窗口 > 分享主窗口 */
+#shareConfigModal { z-index: 9000 !important; }
+#shareListModal { z-index: 9000 !important; }
+#shareQRModal { z-index: 9100 !important; }
+#shareCmdModal { z-index: 9100 !important; }
+#alertModal { z-index: 10001 !important; }
+#confirmModal { z-index: 10002 !important; }
+
+/* 自定义圆形单选框样式 - 蓝色背景覆盖全部，居中白色勾选对号 */
+input[type="radio"] {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+    position: relative;
+    outline: none;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    vertical-align: middle;
+    margin: 0 6px 0 0;
+    box-shadow: none !important; /* 强制去掉阴影 */
+}
+input[type="radio"]:hover {
+    border-color: #1890ff;
+}
+input[type="radio"]:checked {
+    background: #1890ff;
+    border-color: #1890ff;
+    box-shadow: none !important; /* 强制去掉选中时阴影 */
+}
+input[type="radio"]:checked::after {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 11px;
+    font-weight: bold;
+    line-height: 1;
+}
+
+/* 分享下载命令文本框可编辑样式 */
+#shareCmdText {
+    background: #fff !important;
+    color: #333 !important;
+    cursor: text !important;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    resize: vertical;
+    min-height: 60px;
+    pointer-events: auto !important;
+    user-select: text !important;
+    outline: none;
+    border: 1px solid #ddd;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+/* 二维码窗口排版优化 (修复溢出，还原正方形) */
+#shareQRModal .modal-content {
+    max-width: 320px;
+    text-align: center;
+}
+#qrcode {
+    display: flex !important;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin: 10px auto;
+    width: 200px !important;
+    height: 200px !important;
+    overflow: hidden;
+}
+#qrcode img, #qrcode canvas {
+    width: 180px !important;
+    height: 180px !important;
+    display: block !important;
+    margin: 0 auto;
+}
+#qrFileName {
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+    word-break: break-all;
+    padding: 0 10px;
+}
+#qrFileSize { font-size: 13px; color: #999; margin-top: 4px; }
+#qrExpireTime {
+    font-size: 12px; color: #999; margin-top: 8px;
+    padding: 4px 12px; background: #f5f5f5; border-radius: 4px; display: inline-block;
+}
+
 /* ====== 手机端响应式 ====== */
 @media (max-width: 768px) {
     body { padding: 5px; }
@@ -430,4 +544,192 @@ body, div, span, p, h1, h2, h3, h4, h5, h6, a, td, th, label, input, select, tex
     .modal-content.modal-large { width: 95%; }
     .status-bar { flex-wrap: wrap; gap: 5px; justify-content: center; bottom: 5px; left: 5px; right: 5px; }
     .disk-info { position: static; transform: none; width: 100%; }
+/* 【优化缩放拖影】CodeMirror 硬件加速 */
+    .CodeMirror {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+}
+}
+
+/* ====== 原生代码编辑器（离线语法高亮） ====== */
+.wz-editor {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 68vh;
+    max-height: 740px;
+    border: 1px solid var(--border, #e8e8e8);
+    border-radius: 6px;
+    background: #fff;
+    overflow: hidden;
+    transition: border-color .15s ease;
+}
+.wz-editor.has-selection { border-color: #9ed8b0; }  /* 选中文本时淡绿色边框 */
+
+.wz-editor-bar {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    left: auto;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    pointer-events: none;
+}
+.wz-copy-btn {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    background: rgba(255,255,255,.94);
+    border: 1px solid #e2e2e2;
+    color: #555;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12);
+    transition: background .15s, color .15s, border-color .15s;
+}
+.wz-copy-btn:hover { background: #20a53a; color: #fff; border-color: #20a53a; }
+.wz-copy-tip {
+    font-size: 12px;
+    color: #20a53a;
+    background: rgba(255,255,255,.96);
+    padding: 2px 7px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity .2s;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0,0,0,.1);
+}
+.wz-copy-tip.show { opacity: 1; }
+
+.wz-editor-main { flex: 1; display: flex; min-height: 0; }
+
+.wz-editor-gutter {
+    flex: 0 0 auto;
+    /* 【调节位置】行号槽内边距：top 必须与 .wz-editor-pre/.wz-editor-ta 的 padding-top 一致(8px)，否则首行行号会偏高/偏低 */
+    padding: 8px 6px 10px 10px;
+    text-align: right;
+    color: #b5b5b5;
+    background: #fafafa;
+    border-right: 1px solid #eee;
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-y: hidden;
+    overflow-x: hidden;
+    user-select: none;
+    min-width: 46px;
+}
+/* 【调节位置】行号每行高度：必须等于 font-size(13px) × line-height(1.6) = 20.8px，与文本区每行实际像素高度一致 */
+.wz-editor-gutter > div {
+    height: 20.8px;
+    line-height: 20.8px;
+}
+
+.wz-editor-area { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+
+.wz-editor-pre, .wz-editor-ta {
+    margin: 0;
+    position: absolute;
+    inset: 0;
+    /* 【调节位置】文本区内边距：padding-top(8px) 必须与 .wz-editor-gutter 的 padding-top 完全一致，否则行号与文本行会上下错位 */
+    padding: 8px 10px 10px 12px;
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    letter-spacing: 0;
+    tab-size: 4;
+    -moz-tab-size: 4;
+    white-space: pre;
+    word-wrap: normal;
+    border: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-variant-ligatures: none;
+}
+.wz-editor-pre {
+    z-index: 1;
+    pointer-events: none;
+    color: #1a1a1a;
+    background: transparent;
+    overflow: hidden;
+}
+.wz-editor-pre code {
+    display: block;
+    margin: 0;
+    padding: 0;
+    color: inherit;
+    line-height: 1.6;
+}
+.wz-editor-ta {
+    z-index: 2;
+    color: transparent;
+    background: transparent;
+    caret-color: #1a1a1a;
+    resize: none;
+    outline: none;
+    overflow: auto;
+}
+.wz-editor-ta::selection { background: rgba(32,165,58,.20); }
+.wz-editor-ta::-moz-selection { background: rgba(32,165,58,.20); }
+
+/* 单一滚动条（仅 textarea），窄轨、长滑块、无底色 */
+.wz-editor-ta { scrollbar-width: thin; scrollbar-color: #c4c4c4 transparent; }
+.wz-editor-ta::-webkit-scrollbar { width: 10px; height: 6px; }
+.wz-editor-ta::-webkit-scrollbar-track { background: transparent; }
+.wz-editor-ta::-webkit-scrollbar-thumb {
+    background: #c4c4c4;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    min-height: 80px;
+}
+.wz-editor-ta::-webkit-scrollbar-thumb:hover { background: #a8a8a8; background-clip: padding-box; }
+.wz-editor-ta::-webkit-scrollbar-corner { background: transparent; }
+
+/* 简单代码高亮配色（普通文本黑色，特殊部分用其它颜色） */
+.tok-com { color: #9ca3af; font-style: italic; }
+.tok-str { color: #2a9d4a; }
+.tok-num { color: #c2410c; }
+.tok-key { color: #2563eb; }
+.tok-fn  { color: #9333ea; }
+.tok-tag { color: #2563eb; }
+.tok-attr { color: #c2410c; }
+.tok-url { color: #0ea5e9; }
+.tok-text { color: #0d9488; }   /* HTML 标签之间的元素正文文本 */
+
+/* 分享弹窗：有效期选项文字不可被选中（去除蓝色遮挡高亮） */
+#shareConfigModal label {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent; /* 去除移动端点击高亮 */
+    outline: none; /* 去除焦点轮廓 */
+}
+
+/* 彻底去除点击单选框和文字时浏览器的默认蓝色聚焦轮廓 */
+#shareConfigModal input[type="radio"]:focus,
+#shareConfigModal input[type="radio"]:focus-visible,
+#shareConfigModal label:focus,
+#shareConfigModal label:active {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* 防止双击或拖拽时文字被选中的蓝色背景 */
+#shareConfigModal label::selection,
+#shareConfigModal label *::selection {
+    background: transparent !important;
+}
+#shareConfigModal label::-moz-selection,
+#shareConfigModal label *::-moz-selection {
+    background: transparent !important;
 }
