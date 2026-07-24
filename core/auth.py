@@ -5,7 +5,6 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
 
-
 class AuthManager:
     """认证管理器 - 密码验证 + 失败锁定"""
 
@@ -43,6 +42,21 @@ class AuthManager:
         """验证密码"""
         stored = self.config.get("auth", "password", default="")
         return secrets.compare_digest(password, stored)
+
+    def _get_session_timeout(self) -> int:
+        """安全获取会话超时时间，防止配置为0或过小导致会话过快过期"""
+        timeout_val = self.config.get("auth", "session_timeout", default=2592000)
+        try:
+            timeout_int = int(timeout_val)
+            # 如果配置小于等于0，则赋予默认值 2592000秒(30天)
+            if timeout_int <= 0:
+                return 2592000
+            # 【修复】设置最小超时时间为3600秒(1小时)，防止会话几秒后过期
+            if timeout_int < 3600:
+                return 3600
+            return timeout_int
+        except (ValueError, TypeError):
+            return 2592000
 
     def login(self, request, password: str) -> Tuple[bool, str, Optional[str]]:
         """
@@ -82,7 +96,7 @@ class AuthManager:
             self._failed_attempts.pop(ip, None)
             # 生成 session token
             token = secrets.token_hex(32)
-            timeout = self.config.get("auth", "session_timeout", default=7200)
+            timeout = self._get_session_timeout()
             self._sessions[token] = {
                 "ip": ip,
                 "expires": time.time() + timeout,
@@ -102,6 +116,11 @@ class AuthManager:
             if time.time() > session["expires"]:
                 self._sessions.pop(token, None)
                 return False
+            
+            # 【关键修复】滑动续期：只要用户还在操作，就自动延长会话过期时间，保持连接不断开
+            timeout = self._get_session_timeout()
+            session["expires"] = time.time() + timeout
+            
             return True
 
     def logout(self, token: str) -> None:
