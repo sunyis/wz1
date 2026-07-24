@@ -5,16 +5,9 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>文件管理器</title>
     <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="icon" type="image/jpg" href="https://testingcf.jsdelivr.net/gh/wuzhij/pic/pic/1783786831337.jpg">
-    <!-- CodeMirror 代码高亮 -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/shell/shell.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/python/python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/xml/xml.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/clike/clike.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/addon/edit/matchbrackets.min.js"></script>
+    <link rel="icon" type="image/jpg" href="/static/img/logo.jpg">
+    <!-- 二维码生成库 -->
+    <script src="/static/js/qrcode.min.js?v=native20260724"></script>
 </head>
 <body>
     <div id="app">
@@ -54,6 +47,10 @@
     <div class="breadcrumb" id="breadcrumb"></div>
     <!-- 外层只负责 flex 布局，不画边框 -->
     <div style="display: flex; align-items: center; height: 34px; flex-shrink: 0; margin-left: 15px;">
+        <!-- 新增：分享管理按钮 -->
+        <button class="btn-default" onclick="showShareListModal()" title="分享列表" style="margin-right: 10px; display: flex; align-items: center; padding: 8px 16px; font-size: 13px;">
+            <svg t="1784821758219" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="30053" width="16" height="16" style="vertical-align: middle; margin-right: 4px;"><path d="M841.8 623.8c-59.9 0-112.5 29.2-145.8 73.6L431.7 573.1c5.2-18.8 8.2-38.5 8.2-58.9s-3-40.1-8.2-58.9L696 331c33.3 44.5 85.9 73.6 145.8 73.6 100.9 0 182.7-81.8 182.7-182.7 0-100.9-81.8-182.7-182.7-182.7-100.9 0-182.7 81.8-182.7 182.7 0 14.9 2.3 29.1 5.6 43L400.6 389.1C361 332.3 295.3 295 220.7 295 99.6 295 1.5 393.1 1.5 514.2s98.1 219.2 219.2 219.2c74.6 0 140.3-37.3 179.9-94.2l264.1 124.3c-3.3 13.8-5.6 28.1-5.6 43 0 100.9 81.8 182.7 182.7 182.7 100.9 0 182.7-81.8 182.7-182.7-0.1-100.9-81.8-182.7-182.7-182.7z m0-511.5c60.4 0 109.6 49.2 109.6 109.6 0 60.4-49.2 109.6-109.6 109.6-60.4 0-109.6-49.2-109.6-109.6 0-60.4 49.1-109.6 109.6-109.6z m-621.1 548c-80.6 0-146.1-65.6-146.1-146.1 0-80.6 65.6-146.1 146.1-146.1s146.1 65.6 146.1 146.1c0 80.6-65.5 146.1-146.1 146.1z m621.1 255.8c-60.4 0-109.6-49.2-109.6-109.6s49.2-109.6 109.6-109.6c60.4 0 109.6 49.2 109.6 109.6 0 60.4-49.2 109.6-109.6 109.6z m0 0" fill="#5796F2" p-id="30054"></path></svg>
+        </button>
         <!-- 搜索输入区域：保留上、下、左边框，去掉右边框以实现无缝连接 -->
         <div style="display: flex; align-items: center; border: 1px solid #e8e8e8; border-right: none; border-radius: 4px 0 0 4px; background-color: transparent; height: 100%; box-sizing: border-box;">
             <input type="text" id="searchInput" placeholder="搜索文件..." style="border: none; background: transparent; padding: 0 10px; outline: none; font-size: 13px; width: 150px; height: 100%;">
@@ -81,6 +78,7 @@
                 <button class="action-btn" onclick="batchAction('compress')">压缩</button>
                 <button class="action-btn" id="batchExtractBtn" onclick="batchAction('extract')" style="display:none;">解压</button>
                 <button class="action-btn" onclick="batchAction('download')">下载</button>
+                <button class="action-btn" id="batchShareBtn" onclick="shareAction()">分享</button>
                 <button class="action-btn" onclick="batchAction('perm')">权限</button>
                 <button class="action-btn" onclick="batchAction('info')">属性</button>
                 <button class="action-btn" onclick="showAnalyzeModal()">占用分析</button>
@@ -99,7 +97,7 @@
                         <th class="col-time">修改时间</th>
                         <th class="col-perms">权限</th>
                         <!-- 强制操作列右对齐并增加间距 -->
-                        <th class="col-actions" style="text-align: right; padding-right: 113px;">操作</th>
+                        <th class="col-actions" style="text-align: left; padding-left: 87px;">操作</th>
                     </tr>
                 </thead>
                 <tbody id="fileTableBody">
@@ -122,8 +120,22 @@
                 <h3 id="editorTitle">编辑文件</h3>
                 <button class="modal-close" onclick="closeModal('editorModal')">×</button>
             </div>
-            <div class="modal-body" oncontextmenu="event.stopPropagation()">
-                <textarea id="editorContent" class="code-editor"></textarea>
+            <div class="modal-body" style="padding:10px;" oncontextmenu="event.stopPropagation()">
+                <div class="wz-editor" id="wzEditor">
+                    <div class="wz-editor-bar">
+                        <button type="button" class="wz-copy-btn" id="wzCopyBtn" title="复制全部内容" aria-label="复制">
+                            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>
+                        </button>
+                        <span class="wz-copy-tip" id="wzCopyTip">已复制到剪切板</span>
+                    </div>
+                    <div class="wz-editor-main">
+                        <div class="wz-editor-gutter" id="wzEditorGutter"><div>1</div></div>
+                        <div class="wz-editor-area">
+                            <pre class="wz-editor-pre" id="wzEditorPre" aria-hidden="true"><code id="wzEditorCode"></code></pre>
+                            <textarea class="wz-editor-ta" id="editorContent" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-primary" onclick="saveFileContent()">保存</button>
@@ -344,13 +356,13 @@
 <div id="trashModal" class="modal hidden">
     <div class="modal-content modal-large" style="height: 600px;">
         <div class="modal-header">
-            <h3>🗑️ 回收站</h3>
-            <div style="display: flex; gap: 10px; align-items: center;">
+            <h3 style="font-size: 18px;">🗑️ 回收站</h3>
+            <div style="display: flex; gap: 30px; align-items: center;">
                 <!-- 新增：隐藏的批量还原和批量删除按钮 -->
-                <button class="btn-primary hidden" id="restoreSelectedTrashBtn" style="font-size: 14px; border: 1px solid var(--primary); padding: 6px 16px;" onclick="restoreSelectedTrash()">批量还原</button>
-                <button class="btn-danger hidden" id="deleteSelectedTrashBtn" style="font-size: 14px; padding: 6px 16px;" onclick="deleteSelectedTrash()">批量删除</button>
-                <button class="btn-danger" style="font-size: 16px; border: 1px solid transparent;" onclick="clearTrash()">清空回收站</button>
-                <button class="btn-default" id="trashToggleBtn" onclick="toggleTrashEnabled()">关闭回收站</button>
+                <button class="btn-primary hidden" id="restoreSelectedTrashBtn" style="font-size: 16px; border: 1px solid transparent; padding: 6px 16px;" onclick="restoreSelectedTrash()">批量还原</button>
+                <button class="btn-danger hidden" id="deleteSelectedTrashBtn" style="font-size: 16px; border: 1px solid transparent; padding: 6px 16px; margin-left: -15px;" onclick="deleteSelectedTrash()">批量删除</button>
+                <button class="btn-danger" style="font-size: 16px; border: 1px solid transparent; margin-left: -15px;" onclick="clearTrash()">清空回收站</button>
+                <button class="btn-default" id="trashToggleBtn" style="margin-left: -15px;" onclick="toggleTrashEnabled()">关闭回收站</button>
                 <button class="modal-close" onclick="closeModal('trashModal')">×</button>
             </div>
         </div>
@@ -602,6 +614,123 @@
     </div>
 </div>
 
-    <script src="/static/js/app.js"></script>
+<!-- 分享配置弹窗 -->
+<div id="shareConfigModal" class="modal hidden" oncontextmenu="event.stopPropagation()">
+    <div class="modal-content modal-small">
+        <div class="modal-header"><h3>文件分享</h3><button class="modal-close" onclick="closeModal('shareConfigModal')">×</button></div>
+        <div class="modal-body">
+            <div style="text-align: left; font-size: 14px; margin-bottom: 15px; padding-left: 10px;">文件分享有效期</div>
+            <div style="display: flex; justify-content: center; gap: 25px; margin-bottom: 20px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; color: #666;">
+                    <input type="radio" name="shareExpire" value="1" style="margin-right: 6px; width: 16px; height: 16px; accent-color: #1890ff;"> 1天过期
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; color: #666;">
+                    <input type="radio" name="shareExpire" value="7" style="margin-right: 6px; width: 16px; height: 16px; accent-color: #1890ff;"> 7天过期
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; color: #666;">
+                    <input type="radio" name="shareExpire" value="0" checked style="margin-right: 6px; width: 16px; height: 16px; accent-color: #1890ff;"> 永久有效
+                </label>
+            </div>
+            <div style="border-top: 1px solid var(--border); margin: 15px 0;"></div>
+            <div style="display: flex; justify-content: center; gap: 30px; margin-top: 18px; margin-bottom: 20px;">
+                <!-- 复制链接 -->
+                <div id="shareCopyBtn" style="text-align: center;">
+                    <div onclick="doShare('copy')" style="width: 40px; height: 40px; background: #1890ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto 5px;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </div>
+                    <span style="font-size: 14px; color: #333;">复制链接</span>
+                </div>
+                <!-- 生成二维码 -->
+                <div id="shareQrBtn" style="text-align: center;">
+                    <div onclick="doShare('qr')" style="width: 40px; height: 40px; background: #1890ff; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto 5px;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8zm2 2v4h4v-4h-4z"/></svg>
+                    </div>
+                    <span style="font-size: 14px; color: #333;">生成二维码</span>
+                </div>
+                <!-- 确认延期 (新增，默认隐藏) -->
+                <div id="shareUpdateBtn" style="text-align: center; display: none;">
+                    <div onclick="updateShareExpire()" style="width: 40px; height: 40px; background: #20a53a; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto 5px;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 6v6l4 2"></path><circle cx="12" cy="12" r="10"></circle></svg>
+                    </div>
+                    <span style="font-size: 14px; color: #333;">确认延期</span>
+                </div>
+                <!-- 下载命令 -->
+                <div id="shareCmdBtnContainer" style="text-align: center; display: none;">
+                    <div onclick="doShare('cmd')" style="width: 40px; height: 40px; background: #333; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto 5px;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                    </div>
+                    <span style="font-size: 14px; color: #333;">下载命令</span>
+                </div>
+            </div>
+            <!-- 复制提示占位，防止窗口抖动 -->
+            <div id="shareCopyTip" style="text-align: center; color: #20a53a; opacity: 0; transition: opacity 0.3s; margin-bottom: 10px; font-size: 12px; height: 14px;"></div>
+            
+            <button class="btn-default" style="width: 100%; padding: 10px; background: #f5f5f5; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;" onclick="closeModal('shareConfigModal')">取消</button>
+        </div>
+    </div>
+</div>
+
+<!-- 二维码弹窗（新版缺失，此处补回，供 doShare('qr') / showShareQR 使用） -->
+<div id="shareQRModal" class="modal hidden" oncontextmenu="event.stopPropagation()">
+    <div class="modal-content modal-small" style="background: transparent; box-shadow: none; border: none;">
+        <div id="qrCodeBox" style="background: #fff; padding: 20px; border-radius: 12px; text-align: center; position: relative;">
+            <div id="qrFileName" style="font-size: 16px; margin-bottom: 10px; font-weight: bold;"></div>
+            <div id="qrFileInfo" style="background: #f9f9f9; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+                <div id="qrFileIcon" style="font-size: 30px;">📄</div>
+                <div id="qrFileSize" style="font-size: 12px; color: #999; margin-top: 5px;"></div>
+            </div>
+            <div id="qrcode" style="display: flex; justify-content: center; margin-bottom: 15px;"></div>
+            <div style="font-weight: bold; font-size: 15px; margin-bottom: 5px;">打开应用扫码获取文件</div>
+            <div id="qrExpireTime" style="font-size: 12px; color: #999; margin-bottom: 20px;"></div>
+        </div>
+        <div style="margin-top: 20px; text-align: center;">
+            <span onclick="cancelShareQR()" style="font-size: 30px; color: #fff; cursor: pointer; opacity: 0.8;">×</span>
+        </div>
+    </div>
+</div>
+
+<!-- 下载命令弹窗：去掉 readonly，去掉默认选中文本 -->
+<div id="shareCmdModal" class="modal hidden" oncontextmenu="event.stopPropagation()">
+    <div class="modal-content modal-small">
+        <div class="modal-header">
+            <h3>下载命令</h3>
+            <button class="modal-close" onclick="cancelShareCmd()">×</button>
+        </div>
+        <div class="modal-body">
+            <textarea id="shareCmdText" style="width: 100%; height: 80px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; font-family: monospace; font-size: 13px; resize: vertical;"></textarea>
+            <div id="shareCmdTip" style="text-align: center; color: #20a53a; opacity: 0; transition: opacity 0.3s; margin-top: 5px; font-size: 12px;">已复制到剪切板</div>
+            <div style="text-align: center; font-size: 12px; margin-top: 5px; color: #999;">提示: 默认保存文件在服务器的 /www/ 目录内.</div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" onclick="copyShareCmd()">复制命令</button>
+            <button class="btn-default" onclick="cancelShareCmd()">取消</button>
+        </div>
+    </div>
+</div>
+
+<!-- 分享列表弹窗 -->
+<div id="shareListModal" class="modal hidden">
+    <div class="modal-content modal-large" style="height: 520px;">
+        <div class="modal-header">
+            <h3>分享列表</h3>
+            <button class="modal-close" onclick="closeModal('shareListModal')">×</button>
+        </div>
+        <div class="modal-body" style="padding: 0 15px 0 0;">
+            <table class="file-table" style="box-shadow: none; border-collapse: separate; border-spacing: 0;">
+                <thead>
+                    <tr>
+                        <th class="col-name">名称</th>
+                        <th style="width: 100px; text-align: left; ">大小</th>
+                        <th style="width: 120px;">有效期</th>
+                        <th style="width: 250px; text-align: left; padding-left: 108px; ">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="shareTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+    <script src="/static/js/app.js?v=native20260724"></script>
 </body>
 </html>
