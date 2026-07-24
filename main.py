@@ -7,7 +7,11 @@ import stat
 import logging
 import asyncio
 import subprocess
+import time
 import urllib.parse
+import zipfile
+import io
+import uuid
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -41,16 +45,27 @@ Path(os.path.join(BASE_DIR, "web/static/css")).mkdir(parents=True, exist_ok=True
 Path(os.path.join(BASE_DIR, "web/static/js")).mkdir(parents=True, exist_ok=True)
 Path(os.path.join(BASE_DIR, "web/templates")).mkdir(parents=True, exist_ok=True)
 
-# 【日志优化】控制台输出纯文本，文件保留详细日志
+# 【关键修复】初始化配置管理器 (必须在日志配置之前，以便读取日志开关)
+config_path = os.path.join(RUN_DIR, "config.json")
+config = ConfigManager(config_path)
+
+# 【日志优化】控制台输出纯文本，文件保留详细日志，支持配置开关
+log_enable = config.get("logging", "enable", default=True)
+log_level_str = config.get("logging", "level", default="INFO")
+log_level = logging.INFO if log_level_str.upper() == "INFO" else logging.DEBUG
+
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(logging.Formatter('%(message)s'))
-file_handler = logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(log_level)
 root_logger.addHandler(stream_handler)
-root_logger.addHandler(file_handler)
+
+# 如果开启日志，则添加文件记录器
+if log_enable:
+    file_handler = logging.FileHandler(os.path.join(log_dir, "app.log"), encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    root_logger.addHandler(file_handler)
 
 # 全局标志：记录是否因为端口被占用而关闭
 is_port_in_use = False
@@ -115,7 +130,10 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "web/templates"))
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    public_paths = ["/login", "/api/login", "/static", "/api/public-info"]
+    
+    # 【严格修复】仅允许 /s/ 免登录，其它全部要验证登录
+    # 白名单仅保留：登录页、登录接口、静态资源、公网信息接口、分享页/直链、以及分享前端调用的列表接口
+    public_paths = ["/login", "/api/login", "/static", "/api/public-info", "/s", "/api/share/content"]
     
     if any(path.startswith(p) for p in public_paths):
         return await call_next(request)
@@ -289,13 +307,43 @@ async def upload_file(path: str = Form(...), file: UploadFile = File(...), overw
 
 @app.get("/api/files/download")
 async def download_file(path: str):
-    data, filename, error = file_manager.download_file(path)
-    if error:
-        return JSONResponse({"success": False, "msg": error})
+    sftp = file_manager._ensure_sftp()
+    if not sftp:
+        return JSONResponse({"success": False, "msg": "SFTP 未连接"})
+    
+    # 1. 预检：防止下载目录或无权限文件导致流式响应中途崩溃
+    try:
+        stat_info = sftp.stat(path)
+        if stat.S_ISDIR(stat_info.st_mode):
+            return JSONResponse({"success": False, "msg": "不能下载文件夹，请压缩后再下载"})
+    except Exception as e:
+        err_str = str(e)
+        if "Failure" in err_str or "No such file" in err_str or "Permission denied" in err_str:
+            return JSONResponse({"success": False, "msg": "无法下载该文件，可能不存在或无读取权限"})
+        return JSONResponse({"success": False, "msg": str(e)})
+
+    filename = os.path.basename(path)
     ascii_filename = filename.encode('ascii', 'ignore').decode('ascii') or 'download'
     quoted_filename = urllib.parse.quote(filename)
-    headers = {"Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}"}
-    return Response(content=data, media_type="application/octet-stream", headers=headers)
+    
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}",
+        "X-Content-Type-Options": "nosniff"
+    }
+
+    # 【关键修复】使用流式传输，每次只读取 64KB 到内存，防止大文件导致内存溢出
+    def file_stream():
+        try:
+            with sftp.open(path, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)  # 每次读取 64KB
+                    if not chunk:
+                        break
+                    yield chunk
+        except Exception:
+            pass  # 流式传输中途如果遇到网络断开等异常，直接忽略结束
+
+    return StreamingResponse(file_stream(), media_type="application/octet-stream", headers=headers)
 
 @app.post("/api/files/compress")
 async def compress_files(request: Request):
@@ -361,6 +409,44 @@ async def restore_trash_batch_api(request: Request):
     for tid in trash_ids:
         file_manager.restore(tid)
     return {"success": True, "msg": f"已尝试还原 {len(trash_ids)} 项"}
+
+@app.get("/api/trash/download")
+async def download_trash_file(trash_id: str):
+    result = file_manager.get_trash_file_info(trash_id)
+    
+    if not result.get("success"):
+        return JSONResponse(result)
+        
+    real_path = result["real_path"]
+    original_name = result["original_name"]
+    
+    # 2. 检查 SFTP 连接
+    sftp = file_manager._ensure_sftp()
+    if not sftp:
+        return JSONResponse({"success": False, "msg": "SFTP 未连接"})
+
+    # 3. 处理文件名编码，确保中文文件名能正常下载
+    ascii_filename = original_name.encode('ascii', 'ignore').decode('ascii') or 'download'
+    quoted_filename = urllib.parse.quote(original_name)
+    
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}",
+        "X-Content-Type-Options": "nosniff"
+    }
+
+    # 4. 使用流式传输，每次只读取 64KB 到内存，防止大文件导致内存溢出
+    def file_stream():
+        try:
+            with sftp.open(real_path, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)  # 每次读取 64KB
+                    if not chunk:
+                        break
+                    yield chunk
+        except Exception:
+            pass  # 流式传输中途如果遇到网络断开等异常，直接忽略结束
+
+    return StreamingResponse(file_stream(), media_type="application/octet-stream", headers=headers)
 
 @app.post("/api/trash/delete-batch")
 async def delete_trash_batch_api(request: Request):
@@ -504,6 +590,490 @@ def open_firewall_port(port):
             subprocess.run(["ufw", "allow", f"{port}/tcp"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except: pass
 
+# --- 分享功能接口 ---
+def get_shares_file_path():
+    return os.path.join(real_config_dir, "shares.json")
+
+def load_shares():
+    try:
+        with open(get_shares_file_path(), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_shares(data):
+    with open(get_shares_file_path(), 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+@app.post("/api/share/create")
+async def create_share(request: Request):
+    data = await request.json()
+    paths = data.get("paths", [])
+    expire_days = int(data.get("expire_days", 0)) # 0=永久, 1=1天, 7=7天
+    
+    if not paths:
+        return JSONResponse({"success": False, "msg": "请选择要分享的文件"})
+        
+    share_id = uuid.uuid4().hex[:8]
+    expire_time = 0
+    if expire_days > 0:
+        expire_time = int(time.time()) + expire_days * 86400
+        
+    shares = load_shares()
+    shares[share_id] = {
+        "paths": paths,
+        "create_time": int(time.time()),
+        "expire_time": expire_time
+    }
+    save_shares(shares)
+    
+    sftp = file_manager._ensure_sftp()
+    # 判断分享类型，生成对应的链接
+    is_single_file = False
+    if len(paths) == 1 and sftp:
+        try:
+            if not stat.S_ISDIR(sftp.stat(paths[0]).st_mode):
+                is_single_file = True
+        except: pass
+        
+    name = os.path.basename(paths[0]) if len(paths) == 1 else f"{len(paths)}个文件"
+    if is_single_file:
+        share_url = f"/s/{share_id}/{name}"  # 单文件直链格式
+    else:
+        share_url = f"/s/{share_id}"         # 多文件网页浏览格式
+    
+    return {"success": True, "share_id": share_id, "url": share_url, "name": name}
+
+@app.get("/api/share/list")
+async def list_shares():
+    shares = load_shares()
+    now = int(time.time())
+    active_shares = []
+    to_remove = []
+    
+    sftp = file_manager._ensure_sftp()
+    
+    for sid, sdata in shares.items():
+        if sdata["expire_time"] != 0 and sdata["expire_time"] < now:
+            to_remove.append(sid)
+            continue
+        paths = sdata["paths"]
+        
+        # 判断是否是单文件直链
+        is_single_file = False
+        if len(paths) == 1 and sftp:
+            try:
+                if not stat.S_ISDIR(sftp.stat(paths[0]).st_mode):
+                    is_single_file = True
+            except: pass
+            
+        name = os.path.basename(paths[0]) if len(paths) == 1 else f"{len(paths)}个文件"
+        share_url = f"/s/{sid}/{name}" if is_single_file else f"/s/{sid}"
+
+        # 计算分享大小用于列表展示
+        size_val = 0
+        size_str = "-"
+        if len(paths) == 1 and sftp:
+            try:
+                st = sftp.stat(paths[0])
+                if not stat.S_ISDIR(st.st_mode):
+                    size_val = st.st_size
+                    size_str = file_manager._format_size(st.st_size)
+            except Exception:
+                pass
+
+        active_shares.append({
+            "id": sid,
+            "name": name,
+            "paths": paths,
+            "expire_time": sdata["expire_time"],
+            "create_time": sdata["create_time"],
+            "url": share_url,
+            "size": size_val,
+            "size_str": size_str,
+            "is_single_file": is_single_file
+        })
+        
+    if to_remove:
+        for sid in to_remove:
+            del shares[sid]
+        save_shares(shares)
+        
+    return {"success": True, "shares": active_shares}
+
+@app.post("/api/share/update")
+async def update_share_expire(request: Request):
+    """更新分享的有效期，原链接不变"""
+    data = await request.json()
+    sid = data.get("id")
+    expire_days = int(data.get("expire_days", 0))
+    
+    shares = load_shares()
+    if sid not in shares:
+        return {"success": False, "msg": "分享不存在"}
+        
+    if expire_days > 0:
+        shares[sid]["expire_time"] = int(time.time()) + expire_days * 86400
+    else:
+        shares[sid]["expire_time"] = 0
+        
+    save_shares(shares)
+    return {"success": True, "msg": "有效期更新成功"}
+
+@app.post("/api/share/cancel")
+async def cancel_share(request: Request):
+    data = await request.json()
+    sid = data.get("id")
+    shares = load_shares()
+    if sid in shares:
+        del shares[sid]
+        save_shares(shares)
+    return {"success": True}
+
+@app.get("/api/share/content")
+async def share_content(share_id: str, path: str = ""):
+    """获取分享目录内的文件列表，供网页浏览"""
+    shares = load_shares()
+    if share_id not in shares:
+        return JSONResponse({"success": False, "msg": "分享不存在或已取消"}, status_code=404)
+        
+    sdata = shares[share_id]
+    now = int(time.time())
+    if sdata["expire_time"] != 0 and sdata["expire_time"] < now:
+        del shares[share_id]
+        save_shares(shares)
+        return JSONResponse({"success": False, "msg": "分享已过期"}, status_code=404)
+        
+    paths = sdata["paths"]
+    sftp = file_manager._ensure_sftp()
+    if not sftp: return JSONResponse({"success": False, "msg": "服务器 SFTP 未连接"}, status_code=500)
+    
+    items = []
+    
+    if not path:
+        # 根目录，展示 paths 里包含的文件和目录
+        for p in paths:
+            try:
+                attr = sftp.stat(p)
+                is_dir = stat.S_ISDIR(attr.st_mode)
+                items.append({
+                    "name": os.path.basename(p),
+                    "path": os.path.basename(p), # 虚拟路径，以文件名开头
+                    "is_dir": is_dir,
+                    "size": "-" if is_dir else file_manager._format_size(attr.st_size)
+                })
+            except: pass
+    else:
+        # 子目录，去真实的 SFTP 路径下列出内容
+        base_name = path.split('/')[0]
+        real_base = None
+        for p in paths:
+            if os.path.basename(p) == base_name:
+                real_base = p
+                break
+                
+        if not real_base:
+            return JSONResponse({"success": False, "msg": "路径不在分享范围内"})
+            
+        relative_path = '/'.join(path.split('/')[1:])
+        real_path = os.path.join(real_base, relative_path)
+        real_path = os.path.normpath(real_path)
+        
+        # 安全检查：防止目录穿越
+        if not real_path.startswith(real_base.rstrip('/')):
+            return JSONResponse({"success": False, "msg": "无权限访问该路径"})
+            
+        try:
+            for attr in sftp.listdir_attr(real_path):
+                items.append({
+                    "name": attr.filename,
+                    "path": path + "/" + attr.filename, # 拼接虚拟路径
+                    "is_dir": stat.S_ISDIR(attr.st_mode),
+                    "size": "-" if stat.S_ISDIR(attr.st_mode) else file_manager._format_size(attr.st_size)
+                })
+        except Exception as e:
+            return JSONResponse({"success": False, "msg": str(e)})
+            
+    return {"success": True, "items": items}
+
+@app.get("/s/{share_id}")
+async def view_share(share_id: str):
+    """多文件/文件夹分享的网页浏览界面"""
+    shares = load_shares()
+    if share_id not in shares:
+        return HTMLResponse("<h1>分享不存在或已取消</h1>", status_code=404)
+        
+    sdata = shares[share_id]
+    now = int(time.time())
+    if sdata["expire_time"] != 0 and sdata["expire_time"] < now:
+        del shares[share_id]
+        save_shares(shares)
+        return HTMLResponse("<h1>分享已过期</h1>", status_code=404)
+        
+    # 返回一个简单的 HTML 网页，修复手机端文件名显示不全及复制提示问题
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=0.6, maximum-scale=1.0, user-scalable=yes">
+        <title>文件分享</title>
+        <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'><path d='M511.453372 511.500905m-499.665227 0a499.665228 499.665228 0 1 0 999.330455 0 499.665228 499.665228 0 1 0-999.330455 0Z' fill='%2356C3FD'/><path d='M701.63227 212.186604a106.093302 106.093302 0 0 0-64.597131 190.131365l-97.299726 170.072506a122.634731 122.634731 0 0 0-123.157592 13.071531l-60.366708-64.169336a74.341364 74.341364 0 1 0-22.24537 17.967414l61.792694 65.690387a122.634731 122.634731 0 1 0 168.408856-17.872348l97.584923-170.547835a106.140835 106.140835 0 1 0 39.880054-204.391217z' fill='%23FFFFFF'/></svg>">
+        <style>
+            body {{ font-family: -apple-system, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }}
+            .container {{ max-width: 800px; min-height: 80vh; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); box-sizing: border-box; }}
+            .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; }}
+            .file-list {{ list-style: none; padding: 0; margin: 0; }}
+            .file-item {{ display: flex; align-items: center; padding: 12px 10px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.2s; flex-wrap: wrap; -webkit-tap-highlight-color: transparent; }}
+            .file-item:hover {{ background: transparent; }}
+            .icon {{ margin-right: 10px; font-size: 20px; width: 24px; text-align: center; flex-shrink: 0; }}
+            .name {{ flex: 1; color: #333; font-size: 14px; word-break: break-all; white-space: normal; min-width: 150px; }}
+            .size {{ color: #999; font-size: 12px; margin-left: 10px; margin-right: 15px; flex-shrink: 0; }}
+            .actions {{ display: flex; gap: 8px; margin-left: auto; flex-shrink: 0; align-items: center; }}
+            .btn {{ border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; color: #fff; }}
+            .btn-download {{ background: #1890ff; }}
+            .btn-copy {{ background: #52c41a; }}
+            /* 面包屑路径样式 */
+            .breadcrumb {{ margin-bottom: 15px; font-size: 14px; color: #999; word-break: break-all; }}
+            .breadcrumb a {{ color: #1890ff; cursor: pointer; text-decoration: none; }}
+            .breadcrumb a:hover {{ text-decoration: underline; }}
+            
+            /* 局部的复制提示样式，绝对定位在按钮下方 */
+            .action-group {{ position: relative; display: flex; align-items: center; }}
+            .copy-toast {{ 
+                position: absolute; 
+                top: 100%; 
+                left: 50%; 
+                transform: translateX(-50%); 
+                margin-top: 5px;
+                background: rgba(0,0,0,0.7); 
+                color: #fff; 
+                padding: 4px 8px; 
+                border-radius: 4px; 
+                font-size: 12px; 
+                white-space: nowrap;
+                display: none; 
+                z-index: 10; 
+                pointer-events: none; 
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2 style="margin:0; color:#333;">📂 文件分享中心</h2>
+                <p style="color:#999; font-size:13px; margin:5px 0 0;">Share ID: {share_id}</p>
+            </div>
+            <div class="breadcrumb" id="breadcrumb">位置: /<a onclick="loadContent('')">根目录</a></div>
+            <ul class="file-list" id="fileList"></ul>
+        </div>
+        <script>
+            const shareId = '{share_id}';
+            
+            async function loadContent(path) {{
+                // 更新面包屑路径
+                const breadcrumb = document.getElementById('breadcrumb');
+                let pathHtml = `<a onclick="loadContent('')">根目录</a>`;
+                if (path) {{
+                    const parts = path.split('/');
+                    let currentPath = '';
+                    parts.forEach(part => {{
+                        currentPath = currentPath ? currentPath + '/' + part : part;
+                        pathHtml += `/<a onclick="loadContent('${{currentPath}}')">${{part}}</a>`;
+                    }});
+                }}
+                breadcrumb.innerHTML = '位置: /' + pathHtml;
+                
+                const res = await fetch(`/api/share/content?share_id=${{shareId}}&path=${{encodeURIComponent(path)}}`);
+                const data = await res.json();
+                const list = document.getElementById('fileList');
+                list.innerHTML = '';
+                
+                if (data.success) {{
+                    if (data.items.length === 0) {{
+                        list.innerHTML = '<li style="text-align:center; color:#999; padding:30px;">此文件夹为空</li>';
+                        return;
+                    }}
+                    data.items.forEach(item => {{
+                        const li = document.createElement('li');
+                        li.className = 'file-item';
+                        
+                        // 处理大小显示，如果是目录或者无大小则隐藏
+                        const sizeHtml = (item.size && item.size !== '-') ? `<span class="size">大小: ${{item.size}}</span>` : '';
+                        
+                        if (item.is_dir) {{
+                            const newPath = path ? path + '/' + item.name : item.name;
+                            // 支持点击文件夹名称进入
+                            li.innerHTML = `<span class="icon">📁</span><span class="name" onclick="event.stopPropagation(); loadContent('${{newPath}}')">${{item.name}}</span>${{sizeHtml}}`;
+                            li.onclick = () => {{ loadContent(newPath); }};
+                        }} else {{
+                            // 支持点击文件名称下载
+                            li.innerHTML = `
+                                <span class="icon">📄</span>
+                                <span class="name" onclick="event.stopPropagation(); downloadFile('${{item.path}}')">${{item.name}}</span>
+                                ${{sizeHtml}}
+                                <div class="actions">
+                                    <div class="action-group">
+                                        <button class="btn btn-copy" onclick="event.stopPropagation(); copyLink(this, '${{item.path}}')">复制链接</button>
+                                        <div class="copy-toast">已复制到剪切板</div>
+                                    </div>
+                                    <button class="btn btn-download" onclick="event.stopPropagation(); downloadFile('${{item.path}}')">下载</button>
+                                </div>
+                            `;
+                        }}
+                        list.appendChild(li);
+                    }});
+                }} else {{
+                    list.innerHTML = `<li style="color:red; padding: 20px; text-align: center;">${{data.msg || '加载失败'}}</li>`;
+                }}
+            }}
+            
+            function downloadFile(filePath) {{
+                window.location.href = `/s/${{shareId}}/download?path=${{encodeURIComponent(filePath)}}`;
+            }}
+
+            function copyLink(btn, filePath) {{
+                const link = `${{window.location.origin}}/s/${{shareId}}/download?path=${{encodeURIComponent(filePath)}}`;
+                const textarea = document.createElement('textarea');
+                textarea.value = link;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {{
+                    document.execCommand('copy');
+                    const toast = btn.nextElementSibling;
+                    if (toast) {{
+                        toast.style.display = 'block';
+                        setTimeout(() => {{ toast.style.display = 'none'; }}, 2000);
+                    }}
+                }} catch (err) {{
+                    alert('复制失败，请手动复制: ' + link);
+                }}
+                document.body.removeChild(textarea);
+            }}
+            
+            // 初始化：加载根目录
+            loadContent('');
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html_content)
+
+@app.get("/s/{share_id}/download")
+async def download_share(share_id: str, path: str):
+    """提供分享内单文件的流式下载 (网页浏览模式使用)"""
+    shares = load_shares()
+    if share_id not in shares:
+        return HTMLResponse("分享不存在或已取消", status_code=404)
+        
+    sdata = shares[share_id]
+    now = int(time.time())
+    if sdata["expire_time"] != 0 and sdata["expire_time"] < now:
+        del shares[share_id]
+        save_shares(shares)
+        return HTMLResponse("分享已过期", status_code=404)
+        
+    paths = sdata["paths"]
+    sftp = file_manager._ensure_sftp()
+    if not sftp: return HTMLResponse("服务器 SFTP 未连接", status_code=500)
+    
+    # 根据虚拟路径解析出真实路径
+    base_name = path.split('/')[0]
+    real_base = None
+    for p in paths:
+        if os.path.basename(p) == base_name:
+            real_base = p
+            break
+            
+    if not real_base:
+        return HTMLResponse("文件不在分享范围内", status_code=404)
+        
+    relative_path = '/'.join(path.split('/')[1:])
+    if relative_path:
+        real_path = os.path.join(real_base, relative_path)
+    else:
+        real_path = real_base
+        
+    real_path = os.path.normpath(real_path)
+    
+    # 安全检查：防止目录穿越攻击
+    if not real_path.startswith(real_base.rstrip('/')):
+        return HTMLResponse("无权限访问该文件", status_code=403)
+        
+    try:
+        stat_info = sftp.stat(real_path)
+        if stat.S_ISDIR(stat_info.st_mode):
+            return HTMLResponse("不能下载文件夹，请选择具体的文件", status_code=400)
+    except:
+        return HTMLResponse("文件不存在", status_code=404)
+        
+    # 流式下载单文件
+    def file_stream():
+        try:
+            with sftp.open(real_path, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk: break
+                    yield chunk
+        except: pass
+        
+    filename = os.path.basename(real_path)
+    ascii_filename = filename.encode('ascii', 'ignore').decode('ascii') or 'download'
+    quoted_filename = urllib.parse.quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quoted_filename}",
+        "X-Content-Type-Options": "nosniff"
+    }
+    return StreamingResponse(file_stream(), media_type="application/octet-stream", headers=headers)
+
+@app.get("/s/{share_id}/{filename:path}")
+async def direct_download_share(share_id: str, filename: str):
+    """单文件直链下载：直接访问 /s/{id}/{filename} 触发下载"""
+    shares = load_shares()
+    if share_id not in shares:
+        return HTMLResponse("分享不存在或已取消", status_code=404)
+        
+    sdata = shares[share_id]
+    now = int(time.time())
+    if sdata["expire_time"] != 0 and sdata["expire_time"] < now:
+        del shares[share_id]
+        save_shares(shares)
+        return HTMLResponse("分享已过期", status_code=404)
+        
+    paths = sdata["paths"]
+    sftp = file_manager._ensure_sftp()
+    if not sftp: return HTMLResponse("服务器 SFTP 未连接", status_code=500)
+    
+    # 只有当分享的是单个文件时，才允许直接通过文件名下载
+    if len(paths) == 1:
+        real_path = paths[0]
+        try:
+            stat_info = sftp.stat(real_path)
+            if not stat.S_ISDIR(stat_info.st_mode):
+                # 流式下载
+                def file_stream():
+                    try:
+                        with sftp.open(real_path, 'rb') as f:
+                            while True:
+                                chunk = f.read(65536)
+                                if not chunk: break
+                                yield chunk
+                    except: pass
+                    
+                fname = os.path.basename(real_path)
+                ascii_fname = fname.encode('ascii', 'ignore').decode('ascii') or 'download'
+                quoted_fname = urllib.parse.quote(fname)
+                headers = {
+                    "Content-Disposition": f"attachment; filename=\"{ascii_fname}\"; filename*=UTF-8''{quoted_fname}",
+                    "X-Content-Type-Options": "nosniff"
+                }
+                return StreamingResponse(file_stream(), media_type="application/octet-stream", headers=headers)
+        except:
+            pass
+            
+    # 如果不是单文件，或者文件不存在，则跳转到网页浏览界面
+    return RedirectResponse(f"/s/{share_id}", status_code=302)
+
 @app.on_event("startup")
 async def startup_event():
     port = config.get("server", "port")
@@ -513,19 +1083,20 @@ async def startup_event():
         
     open_firewall_port(port)
     
+    # 【关键修复】始终获取本机公网 IP 用于显示访问地址
+    print("正在获取本机公网 IP...")
+    public_ip = IPDetector.get_public_ip()
+    if not public_ip:
+        public_ip = "127.0.0.1" # 如果获取失败，回退到本地地址
+        
+    # 单独处理 SSH Host 的配置逻辑
     current_ssh_host = config.get("ssh", "host", default="")
-    public_ip = current_ssh_host
     if not current_ssh_host or current_ssh_host == "0.0.0.0":
-        print("检测到SSH未配置，正在自动获取公网 IP...")
-        detected_ip = IPDetector.get_public_ip()
-        if detected_ip:
-            public_ip = detected_ip
-            ssh_config = config.get("ssh", default={})
-            ssh_config["host"] = detected_ip
-            config.update("ssh", ssh_config)
-            print(f"✅ 已自动获取公网 IP 并更新至配置文件: {detected_ip}")
-        else:
-            print("⚠️ 无法获取公网 IP，请在配置文件中手动设置 ssh.host")
+        print("检测到 SSH Host 未配置，自动将本机 IP 设为 SSH 主机...")
+        ssh_config = config.get("ssh", default={})
+        ssh_config["host"] = public_ip
+        config.update("ssh", ssh_config)
+        print(f"✅ 已自动获取公网 IP 并更新至 SSH 配置文件: {public_ip}")
     else:
         print(f"配置文件中已有 SSH Host ({current_ssh_host})，跳过自动获取。")
     
@@ -646,10 +1217,33 @@ WantedBy=multi-user.target
     print("提示: 如果链接不能访问，请自行开放链接中端口 (软路由配置需端口映射)")
     print("配置信息已保存在 config.json 中, 可手动修改后重启生效")
 
-    # 自动生成说明.txt
+    # 自动生成说明.txt (智能匹配系统命令)
     help_file_path = os.path.join(binary_dir, "说明.txt")
     if not os.path.exists(help_file_path):
-        help_content = f"""============================================================
+        if is_openwrt:
+            help_content = f"""============================================================
+WzFileManager 启动成功!
+访问地址: http://{public_ip}:{port}
+默认登录密码: admin123
+============================================================
+【管理命令】
+--------------------
+1. OpenWrt 服务管理 (已支持开机自启):
+启动: /etc/init.d/wzfilemanager start
+停止: /etc/init.d/wzfilemanager stop
+重启: /etc/init.d/wzfilemanager restart
+状态: /etc/init.d/wzfilemanager status
+--------------------
+2. 手动命令管理:
+启动: {binary_path}
+后台启动: cd {binary_dir} && nohup {binary_path} > /dev/null 2>&1 &
+停止: pkill -f '{binary_path}'
+============================================================
+提示: 如果链接不能访问，请自行开放端口 (链接中的端口)
+配置信息已保存在 config.json 中, 可手动修改后重启生效
+"""
+        else:
+            help_content = f"""============================================================
 WzFileManager 启动成功!
 访问地址: http://{public_ip}:{port}
 默认登录密码: admin123
