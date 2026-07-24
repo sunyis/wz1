@@ -59,20 +59,54 @@ class SSHManager:
                     )
 
                 self._client = client
-                self._sftp = client.open_sftp()
+                
+                # 【终极修复】适配 OpenWrt/精简系统：自动查找并强行启动 sftp-server
+                sftp_connected = False
+                try:
+                    # 1. 首先尝试标准 SFTP 子系统连接
+                    self._sftp = client.open_sftp()
+                    sftp_connected = True
+                except Exception:
+                    pass
+                
+                if not sftp_connected:
+                    try:
+                        transport = client.get_transport()
+                        sftp_path = ""
+                        
+                        # 2. 自动通过 SSH 命令查找 sftp-server 的绝对路径
+                        try:
+                            stdin, stdout, stderr = client.exec_command("find /usr -name sftp-server -type f 2>/dev/null | head -n 1")
+                            sftp_path = stdout.read().decode().strip()
+                        except:
+                            pass
+                        
+                        # 3. 如果找到了路径，直接强行执行该程序建立 SFTP 通道
+                        if sftp_path:
+                            try:
+                                chan = transport.open_session()
+                                chan.exec_command(sftp_path)
+                                self._sftp = paramiko.SFTPClient(chan)
+                                sftp_connected = True
+                            except:
+                                pass
+                    except Exception:
+                        pass
+                
+                if not sftp_connected:
+                    return False, "SSH已连接，但无法建立SFTP通道。请在系统上执行: opkg install openssh-sftp-server"
+                
                 self._connected = True
                 return True, "SSH 连接成功"
             except paramiko.AuthenticationException:
                 return False, "认证失败，密码或密钥不正确"
             except paramiko.SSHException as e:
                 err_str = str(e)
-                # 拦截底层网络连接异常并翻译为中文
                 if "Unable to connect to port" in err_str or "Errno None" in err_str or "timed out" in err_str or "Connection refused" in err_str:
                     return False, "请检查IP,端口,密码是否正确及网络是否通畅"
                 return False, f"SSH 连接错误: {err_str}"
             except Exception as e:
                 err_str = str(e)
-                # 拦截底层网络连接异常并翻译为中文
                 if "Unable to connect to port" in err_str or "Errno None" in err_str or "timed out" in err_str or "Connection refused" in err_str:
                     return False, "请检查IP,端口,密码是否正确及网络是否通畅"
                 return False, f"连接异常: {err_str}"
@@ -121,6 +155,18 @@ class SSHManager:
             exit_code = stdout.channel.recv_exit_status()
             return exit_code == 0, out, err
         except Exception as e:
+            self._connected = False
+            self.disconnect()
+            ok_reconnect, msg_reconnect = self.connect()
+            if ok_reconnect:
+                try:
+                    stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+                    out = stdout.read().decode('utf-8', errors='replace')
+                    err = stderr.read().decode('utf-8', errors='replace')
+                    exit_code = stdout.channel.recv_exit_status()
+                    return exit_code == 0, out, err
+                except Exception as e2:
+                    return False, "", str(e2)
             return False, "", str(e)
 
     @property
