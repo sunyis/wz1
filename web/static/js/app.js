@@ -6,7 +6,6 @@ var contextTarget = null;
 var selectedFiles = new Set();
 var selectedPaths = new Set();
 var touchTimer = null;
-var editor;
 var currentEditPath = '';
 var pendingFiles = []; 
 var currentConflicts = [];
@@ -14,11 +13,23 @@ var batchOverwriteResolver = null;
 var currentRenamePath = '';
 var globalFavorites = [];
 var trashEnabled = true; // 回收站状态，默认开启
+var globalSharesData = []; // 存储分享列表数据，供独立编辑使用
 
 // 【全局拦截并翻译网络错误】
 const originalFetch = window.fetch;
 window.fetch = function() {
-    return originalFetch.apply(this, arguments).catch(function(err) {
+    return originalFetch.apply(this, arguments).then(function(response) {
+        // 【修复】遇到 401 未授权时静默重定向到登录页，不在主页弹出错误提示
+        if (response.status === 401) {
+            // 如果当前不在登录页，则静默跳转
+            if (!window.location.pathname.startsWith('/login')) {
+                window.location.href = '/login';
+            }
+            // 返回一个永远不会 resolve 的 Promise，中断后续的 .then() 执行，防止弹窗
+            return new Promise(function() {});
+        }
+        return response;
+    }).catch(function(err) {
         if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
             throw new TypeError('网络连接失败，请刷新或服务器状态');
         }
@@ -26,11 +37,44 @@ window.fetch = function() {
     });
 };
 
+// 绑定分享子窗口取消按钮事件
+function bindShareModalCancelButtons() {
+    var cmdModal = document.getElementById('shareCmdModal');
+    if (cmdModal) {
+        var cmdBtns = cmdModal.querySelectorAll('button');
+        cmdBtns.forEach(function(btn) {
+            var onclick = btn.getAttribute('onclick') || '';
+            if (onclick.indexOf('closeModal') !== -1 && onclick.indexOf('shareCmdModal') !== -1) {
+                btn.onclick = function(e) { 
+                    if(e) e.preventDefault(); 
+                    cancelShareCmd(); 
+                };
+                btn.removeAttribute('onclick');
+            }
+        });
+    }
+    
+    var qrModal = document.getElementById('shareQRModal');
+    if (qrModal) {
+        var qrBtns = qrModal.querySelectorAll('button');
+        qrBtns.forEach(function(btn) {
+            var onclick = btn.getAttribute('onclick') || '';
+            if (onclick.indexOf('closeModal') !== -1 && onclick.indexOf('shareQRModal') !== -1) {
+                btn.onclick = function(e) { 
+                    if(e) e.preventDefault(); 
+                    cancelShareQR(); 
+                };
+                btn.removeAttribute('onclick');
+            }
+        });
+    }
+}
+
 // ====== 初始化 ======
 document.addEventListener('DOMContentLoaded', async function() {
+    
     var initialPath = '/';
     
-    // 【新增】尝试从后端获取自定义主页路径
     try {
         var confResp = await fetch('/api/config');
         var confData = await confResp.json();
@@ -39,7 +83,6 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     } catch(e) {}
 
-    // 如果 URL Hash 有路径，优先使用 Hash 路径
     if (window.location.hash) {
         var hashPath = decodeURIComponent(window.location.hash.substring(1));
         if (hashPath) {
@@ -85,9 +128,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     loadFavorites();
     bindGlobalEvents();
     initDropZone();
+    // 【修复】会话保活心跳 - 定期发送请求，触发滑动续期，防止会话过期
+    setInterval(function() {
+        fetch('/api/ssh/status').catch(function() {});
+    }, 300000); // 每5分钟发送一次，保持会话活跃
 });
 
-// 监听浏览器的前进/后退按钮
 window.addEventListener('hashchange', function() {
     var newPath = decodeURIComponent(window.location.hash.substring(1)) || '/';
     if (fixPath(newPath) !== fixPath(currentPath)) {
@@ -95,13 +141,11 @@ window.addEventListener('hashchange', function() {
     }
 });
 
-// 路径修复
 function fixPath(path) {
     if (!path) return '/';
     return path.replace(/\/+/g, '/');
 }
 
-// 格式化大小 (智能匹配单位)
 function formatSize(bytes) {
     if (!bytes) return '0 B';
     var units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -113,7 +157,6 @@ function formatSize(bytes) {
     return bytes.toFixed(1) + ' ' + units[i];
 }
 
-// 加载磁盘使用情况
 function loadDiskUsage() {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/api/system/disk?path=/', true);
@@ -140,7 +183,9 @@ function loadDiskUsage() {
     xhr.send();
 }
 
-// ====== 收藏夹功能 (云端同步) ======
+// ====== 收藏夹功能 ======
+var favMode = 'normal';
+
 async function loadFavorites() {
     try {
         var resp = await fetch('/api/favorites');
@@ -166,46 +211,131 @@ function saveFavoritesToServer() {
 function toggleFavorites(e) {
     if(e) e.stopPropagation();
     var dropdown = document.getElementById('favoritesDropdown');
-    if (dropdown.classList.contains('hidden')) {
+    if (!dropdown.classList.contains('hidden')) {
+        dropdown.classList.add('hidden');
+    } else {
+        favMode = 'normal';
         renderFavoritesDropdown();
         var rect = e.target.getBoundingClientRect();
         dropdown.style.top = (rect.bottom + 18) + 'px';
         dropdown.style.left = rect.left + 'px';
         dropdown.classList.remove('hidden');
-    } else {
-        dropdown.classList.add('hidden');
     }
 }
 
 function renderFavoritesDropdown() {
     var dropdown = document.getElementById('favoritesDropdown');
+    if (!dropdown) return;
+    var html = '';
+    if (globalFavorites.length === 0 && favMode !== 'add') {
+        html += '<div class="fav-item" style="color:#999; cursor:default;">暂无收藏</div>';
+    } else {
+        globalFavorites.forEach(function(p) {
+            var deleteIcon = '';
+            if (favMode === 'delete') {
+                deleteIcon = '<span class="fav-delete-icon" onclick="removeFavItem(event, \'' + p.replace(/'/g, "\\'") + '\')">×</span>';
+            }
+            var clickAttr = (favMode === 'normal') ? 'onclick="loadFileList(\'' + p.replace(/'/g, "\\'") + '\'); toggleFavorites();"' : 'style="cursor: default;"';
+            html += '<div class="fav-item" ' + clickAttr + ' style="display: flex; justify-content: space-between; align-items: center;">' +
+                    '<span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + p + '</span>' +
+                    deleteIcon + '</div>';
+        });
+    }
+    html += '<div style="width: 100%; border-top: 1px solid var(--border); margin-top: 5px; padding: 0 15px; box-sizing: border-box;"></div>';
+    html += '<div style="width: 100%; display: flex; justify-content: center; gap: 12px; padding: 10px 15px; box-sizing: border-box;">';
+    html += '<button style="padding: 6px 14px; font-size: 13px; border: none; border-radius: 4px; cursor: pointer; background: var(--danger); color: #fff;" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1" onclick="clearAllFavorites(event)">一键清空</button>';
+    if (favMode === 'delete') {
+        html += '<button style="padding: 6px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; background: #f0f0f0; color: #333;" onclick="setFavMode(event, \'normal\')">取消</button>';
+    } else if (favMode === 'add') {
+        html += '<button style="padding: 6px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; background: #f0f0f0; color: #333;" onclick="setFavMode(event, \'normal\')">取消添加</button>';
+    } else {
+        html += '<button style="padding: 6px 14px; font-size: 13px; border: none; border-radius: 4px; cursor: pointer; background: var(--primary); color: #fff;" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1" onclick="setFavMode(event, \'add\')">添加</button>';
+        html += '<button style="padding: 6px 14px; font-size: 13px; border: none; border-radius: 4px; cursor: pointer; background: #faad14; color: #fff;" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1" onclick="setFavMode(event, \'delete\')">删除</button>';
+    }
+    html += '</div>';
+    if (favMode === 'add') {
+        html += '<div style="width: 100%; box-sizing: border-box; padding: 0 15px 15px 15px;">';
+        html += '<div style="display: flex; align-items: center; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;">';
+        html += '<input type="text" id="newFavPath" placeholder="请输入路径" style="flex: 1; border: none; padding: 6px 10px; outline: none; background: transparent; font-size: 13px; min-width: 0;">';
+        html += '<button onclick="confirmAddFav(event)" style="border: none; background: #1890ff; cursor: pointer; padding: 6px 14px; color: #fff; font-size: 13px; white-space: nowrap;">确定</button>';
+        html += '</div></div>';
+    }
+    dropdown.innerHTML = html;
+}
+
+function setFavMode(e, mode) {
+    if (e) e.stopPropagation();
+    favMode = mode;
+    renderFavoritesDropdown();
+    if (mode === 'add') {
+        setTimeout(function() {
+            var input = document.getElementById('newFavPath');
+            if (input) input.focus();
+        }, 50);
+    }
+}
+
+async function confirmAddFav(e) {
+    if (e) e.stopPropagation();
+    var input = document.getElementById('newFavPath');
+    if (!input) return;
+    var path = input.value.trim();
+    if (!path) return;
+    var resp = await fetch('/api/files/info?path=' + encodeURIComponent(path));
+    var data = await resp.json();
+    if (data.success) {
+        if (globalFavorites.indexOf(path) === -1) {
+            globalFavorites.push(path);
+            saveFavoritesToServer();
+        }
+        favMode = 'normal';
+        renderFavoritesDropdown();
+        updateStatus('已添加到收藏夹');
+    } else {
+        showAlert("路径错误，请重新输入");
+        input.value = '';
+        input.focus();
+    }
+}
+
+function removeFavItem(e, path) {
+    if (e) e.stopPropagation();
+    var index = globalFavorites.indexOf(path);
+    if (index !== -1) {
+        globalFavorites.splice(index, 1);
+        saveFavoritesToServer();
+        renderFavoritesDropdown();
+        updateStatus('已从收藏夹移除');
+    }
+}
+
+function clearAllFavorites(e) {
+    if (e) e.stopPropagation();
     if (globalFavorites.length === 0) {
-        dropdown.innerHTML = '<div class="fav-item" style="color:#999; cursor:default;">暂无收藏</div>';
+        showAlert('收藏夹已经是空的');
         return;
     }
-    var html = '';
-    globalFavorites.forEach(function(p) {
-        html += '<div class="fav-item" onclick="loadFileList(\'' + p + '\'); toggleFavorites();">' + p + '</div>';
+    showConfirmModal('确认清空', '确定要清空所有收藏夹路径吗？').then(function(confirmed) {
+        if (confirmed) {
+            globalFavorites = [];
+            saveFavoritesToServer();
+            renderFavoritesDropdown();
+            updateStatus('收藏夹已清空');
+        }
     });
-    dropdown.innerHTML = html;
 }
 
 // ====== 文件列表 ======
 function loadFileList(path) {
     currentPath = fixPath(path);
-    
-    // 将当前路径同步到 URL Hash 中，方便刷新保持和分享链接
     var newHash = '#' + encodeURIComponent(currentPath);
     if (window.location.hash !== newHash) {
         window.location.hash = newHash;
     }
-    
     var pathInput = document.getElementById('pathInput');
     if (pathInput) pathInput.value = currentPath;
-    
     var tbody = document.getElementById('fileTableBody');
     if (!tbody) return;
-    
     tbody.innerHTML = '<tr><td colspan="6" class="loading">加载中...</td></tr>';
 
     fetch('/api/files/list?path=' + encodeURIComponent(currentPath))
@@ -229,7 +359,6 @@ function loadFileList(path) {
 function renderFileList(data) {
     var tbody = document.getElementById('fileTableBody');
     if (!tbody) return;
-    
     tbody.innerHTML = '';
     var fragment = document.createDocumentFragment();
 
@@ -292,11 +421,17 @@ function renderFileList(data) {
             }
             actionsHtml += '<button class="action-btn danger" onclick="event.stopPropagation();deleteFile(\'' + fullPath + '\')">删除</button>';
 
+            var nameDisplay = file.filename;
+            if (file.is_link && file.link_target) {
+                nameDisplay += ' <span style="color: #999;">-> ' + file.link_target + '</span>';
+            }
+            var permDisplay = (file.octal_permissions || '') + '/' + file.permissions;
+
             tr.innerHTML = '<td class="col-checkbox"></td>' +
-                '<td class="col-name"><span class="file-icon">' + icon + '</span><span class="' + (file.is_dir ? 'dir-name' : 'file-name') + '">' + file.filename + '</span></td>' +
+                '<td class="col-name"><span class="file-icon">' + icon + '</span><span class="' + (file.is_dir ? 'dir-name' : 'file-name') + '">' + nameDisplay + '</span></td>' +
                 '<td class="col-size">' + (file.is_dir ? '-' : file.size_str) + '</td>' +
                 '<td class="col-time">' + file.mtime_str + '</td>' +
-                '<td class="col-perms">' + file.permissions + '</td>' +
+                '<td class="col-perms">' + permDisplay + '</td>' +
                 '<td class="col-actions">' + actionsHtml + '</td>';
             
             var checkbox = document.createElement('input');
@@ -311,9 +446,7 @@ function renderFileList(data) {
             fragment.appendChild(tr);
         });
     }
-    
     tbody.appendChild(fragment);
-    
     selectedFiles.clear();
     selectedPaths.clear();
     updateBatchOps();
@@ -328,16 +461,12 @@ function handleItemClick(file, fullPath) {
     } else {
         var exts = ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'];
         if (exts.indexOf(file.extension) !== -1) {
-            showConfirmModal('确认解压', '是否将 ' + file.filename + ' 解压到当前同名目录中？').then(function(confirmed) {
-                if (confirmed) {
-                    extractFile(fullPath);
-                }
+            showConfirmModal('确认解压', '是否将 ' + file.filename + ' 解压到当前目录的同名文件夹中？').then(function(confirmed) {
+                if (confirmed) extractFile(fullPath);
             });
         } else if (imgExts.indexOf(file.extension) !== -1) {
-            // 如果是图片，点击文件名查看预览
             showImagePreview(fullPath);
-        } else {
-            // 其他文件点击行直接编辑
+        } else if (file.extension) {
             editFile(fullPath);
         }
     }
@@ -345,7 +474,6 @@ function handleItemClick(file, fullPath) {
 
 function showImagePreview(path) {
     var img = document.getElementById('previewImage');
-    // 直接将 src 指向下载接口，浏览器自动流式加载，秒开
     img.src = '/api/files/download?path=' + encodeURIComponent(path);
     showModal('imagePreviewModal');
 }
@@ -361,7 +489,6 @@ function selectRow(tr) {
     tr.classList.add('selected');
     var checkbox = tr.querySelector('input[type="checkbox"]');
     if (checkbox) checkbox.checked = true;
-    
     selectedFiles.clear();
     selectedPaths.clear();
     var name = tr.getAttribute('data-name');
@@ -503,16 +630,13 @@ function updateBatchOps() {
     if(!extractBtn) return;
     var allArchives = true;
     var exts = ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'];
-    
     if (selectedPaths.size === 0) {
         allArchives = false;
     } else {
         selectedPaths.forEach(function(path) {
             var parts = path.split('.');
             var ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
-            if (exts.indexOf(ext) === -1) {
-                allArchives = false;
-            }
+            if (exts.indexOf(ext) === -1) allArchives = false;
         });
     }
     extractBtn.style.display = allArchives ? '' : 'none';
@@ -520,17 +644,13 @@ function updateBatchOps() {
     var favBtnAdd = document.getElementById('batchAddFavBtn');
     var favBtnDel = document.getElementById('batchDelFavBtn');
     if(!favBtnAdd || !favBtnDel) return;
-    
     var isFav = false;
     selectedPaths.forEach(function(p) {
         var row = document.querySelector('tr[data-path="' + p + '"]');
         var isDir = row ? row.getAttribute('data-isDir') === 'true' : false;
         var targetPath = isDir ? p : p.substring(0, p.lastIndexOf('/'));
-        if (isFavorited(targetPath)) {
-            isFav = true;
-        }
+        if (isFavorited(targetPath)) isFav = true;
     });
-    
     if (isFav) {
         favBtnAdd.style.display = 'none';
         favBtnDel.style.display = '';
@@ -538,12 +658,15 @@ function updateBatchOps() {
         favBtnAdd.style.display = '';
         favBtnDel.style.display = 'none';
     }
+    var shareBtn = document.getElementById('batchShareBtn');
+    if (shareBtn) {
+        shareBtn.style.display = '';
+    }
 }
 
 function batchAction(action) {
     var paths = Array.from(selectedPaths);
-    if (paths.length === 0 && action !== 'paste') { showAlert('请先选择文件'); return; }
-    
+    if (paths.length === 0 && action !== 'paste' && action !== 'addFav') { showAlert('请先选择文件'); return; }
     if (action === 'delete') {
         var msg = trashEnabled ? '确定将选中的 ' + paths.length + ' 个文件移入回收站吗？' : '确定彻底删除选中的 ' + paths.length + ' 个文件吗？';
         showConfirmModal('确认删除', msg).then(function(confirmed) {
@@ -564,17 +687,11 @@ function batchAction(action) {
     } else if (action === 'copy') {
         clipboard = { action: 'copy', paths: paths };
         updateStatus('已复制 ' + paths.length + ' 个文件');
-        var btn = document.getElementById('batchCopyBtn');
-        if (btn) btn.classList.add('active');
     } else if (action === 'move') {
         clipboard = { action: 'cut', paths: paths };
         updateStatus('已剪切 ' + paths.length + ' 个文件');
-        var btn = document.getElementById('batchMoveBtn');
-        if (btn) btn.classList.add('active');
     } else if (action === 'rename') {
-        if (paths.length > 0) {
-            showRenameModal(paths[0]);
-        }
+        if (paths.length > 0) showRenameModal(paths[0]);
     } else if (action === 'download') {
         paths.forEach(function(p) {
             var iframe = document.createElement('iframe');
@@ -584,13 +701,9 @@ function batchAction(action) {
             setTimeout(function() { document.body.removeChild(iframe); }, 60000);
         });
     } else if (action === 'perm') {
-        if (paths.length > 0) {
-            showPermModal(paths[0]);
-        }
+        if (paths.length > 0) showPermModal(paths[0]);
     } else if (action === 'info') {
-        if (paths.length > 0) {
-            showFileInfo(paths[0]);
-        }
+        if (paths.length > 0) showFileInfo(paths[0]);
     } else if (action === 'extract') { 
         var seq2 = Promise.resolve();
         paths.forEach(function(p) {
@@ -604,20 +717,21 @@ function batchAction(action) {
         seq2.then(function() { refreshList(); updateStatus('批量解压完成'); });
     } else if (action === 'addFav') {
         var added = false;
-        paths.forEach(function(p) {
-            var row = document.querySelector('tr[data-path="' + p + '"]');
-            var isDir = row ? row.getAttribute('data-isDir') === 'true' : false;
-            var targetPath = isDir ? p : p.substring(0, p.lastIndexOf('/'));
-            if (targetPath && !isFavorited(targetPath)) {
-                globalFavorites.push(targetPath);
-                added = true;
-            }
-        });
+        if (paths.length === 0 && currentPath && currentPath !== '/') {
+            if (!isFavorited(currentPath)) { globalFavorites.push(currentPath); added = true; }
+        } else {
+            paths.forEach(function(p) {
+                var row = document.querySelector('tr[data-path="' + p + '"]');
+                var isDir = row ? row.getAttribute('data-isDir') === 'true' : false;
+                var targetPath = isDir ? p : p.substring(0, p.lastIndexOf('/'));
+                if (targetPath && !isFavorited(targetPath)) { globalFavorites.push(targetPath); added = true; }
+            });
+        }
         if (added) {
-            saveFavoritesToServer();
-            updateStatus('已添加到收藏夹');
-            updateBatchOps();
-            renderFavoritesDropdown();
+            saveFavoritesToServer(); updateStatus('已添加到收藏夹'); updateBatchOps(); renderFavoritesDropdown();
+        } else {
+            if (currentPath === '/' && paths.length === 0) showAlert('不能收藏根目录');
+            else showAlert('该路径已在收藏夹中');
         }
     } else if (action === 'delFav') {
         paths.forEach(function(p) {
@@ -627,10 +741,7 @@ function batchAction(action) {
             var index = globalFavorites.indexOf(targetPath);
             if (index !== -1) globalFavorites.splice(index, 1);
         });
-        saveFavoritesToServer();
-        updateStatus('已从收藏夹移除');
-        updateBatchOps();
-        renderFavoritesDropdown();
+        saveFavoritesToServer(); updateStatus('已从收藏夹移除'); updateBatchOps(); renderFavoritesDropdown();
     }
 }
 
@@ -674,56 +785,31 @@ function refreshList() { loadFileList(currentPath); }
 // ====== 文件操作 ======
 function editFile(path) {
     currentEditPath = path;
+    wzInitEditor();
     fetch('/api/files/read?path=' + encodeURIComponent(path))
         .then(function(resp) { return resp.json(); })
         .then(function(data) {
             if (data.success) {
                 var titleEl = document.getElementById('editorTitle');
                 if (titleEl) titleEl.textContent = '编辑: ' + path.split('/').pop();
-                
                 showModal('editorModal');
-                
-                // 延迟 100ms 执行，确保模态框动画结束，容器尺寸稳定
                 setTimeout(function() {
-                    if (editor) editor.toTextArea();
-                    
-                    var textarea = document.getElementById('editorContent');
-                    if (textarea) textarea.value = data.content;
-                    
-                    var ext = path.split('.').pop().toLowerCase();
-                    var mode = "shell";
-                    if (['py'].indexOf(ext) !== -1) mode = "python";
-                    else if (['html', 'xml'].indexOf(ext) !== -1) mode = "xml";
-                    else if (['js'].indexOf(ext) !== -1) mode = "javascript";
-                    else if (['c', 'cpp', 'java'].indexOf(ext) !== -1) mode = "clike";
-
-                    editor = CodeMirror.fromTextArea(textarea, { 
-                        lineNumbers: true, 
-                        mode: mode, 
-                        matchBrackets: true, 
-                        indentUnit: 4, 
-                        lineWrapping: true,
-                        autofocus: false // 【新增】明确禁止自动聚焦
-                    });
-                    
-                    // 【关键修复】延迟刷新编辑器，确保模态框动画结束后编辑器尺寸正确
-                    setTimeout(function() {
-                        if (editor) {
-                            editor.refresh();
-                            // 移除 editor.focus()，只有用户点击文本时才出现光标
-                        }
-                    }, 50);
+                    var ta = document.getElementById('editorContent');
+                    if (ta) {
+                        wzCurrentLang = wzLangOf(path);
+                        ta.value = data.content;
+                        ta.scrollTop = 0; ta.scrollLeft = 0;
+                        wzUpdateEditor();
+                    }
                 }, 100);
-            } else { 
-                showAlert(data.msg); 
-            }
+            } else { showAlert(data.msg); }
         })
         .catch(function(err) { showAlert('读取失败: ' + err); });
 }
 
 function saveFileContent() {
     if (!currentEditPath) return;
-    var content = editor.getValue();
+    var content = document.getElementById('editorContent').value;
     fetch('/api/files/save', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentEditPath, content: content })
@@ -734,6 +820,172 @@ function saveFileContent() {
         else { showAlert(data.msg); }
     })
     .catch(function(err) { showAlert('保存失败: ' + err); });
+}
+
+// ====== 原生编辑器（离线语法高亮，无外部依赖） ======
+var wzCurrentLang = 'text';
+var wzEditorInit = false;
+var WZ_KEYWORDS = {
+    javascript: 'break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new return super switch this throw try typeof var void while with yield async await of static get set',
+    python: 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield True False None',
+    bash: 'if then else elif fi for in do done case esac while until function select return export local set unset source echo cd',
+    php: 'if else elseif while for foreach as switch case break continue function return class public private protected var echo print isset unset include require new this self static',
+    json: 'true false null'
+};
+function wzEscapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function wzLangOf(path){
+    var ext = (path||'').split('.').pop().toLowerCase();
+    if (ext==='py') return 'python';
+    if (ext==='js'||ext==='ts'||ext==='mjs') return 'javascript';
+    if (ext==='html'||ext==='htm'||ext==='xml'||ext==='vue') return 'html';
+    if (ext==='css') return 'css';
+    if (ext==='sh'||ext==='bash') return 'bash';
+    if (ext==='json') return 'json';
+    if (ext==='php') return 'php';
+    return 'text';
+}
+function wzHighlight(code, lang){
+    if (!code) return '';
+    if (lang==='text') return wzEscapeHtml(code);
+    var kw = (WZ_KEYWORDS[lang]||'').split(' ').filter(Boolean);
+    var lineSlash = (lang==='javascript'||lang==='php');
+    var lineHash = (lang==='python'||lang==='bash');
+    var block = (lang!=='python'&&lang!=='bash'&&lang!=='text');
+    var out = '', buf = '', i = 0, n = code.length;
+    function flush(){ if (buf){ out += wzEscapeHtml(buf); buf=''; } }
+    while (i < n){
+        var c = code[i];
+        if (block && c==='/' && code[i+1]==='/'){
+            var e = code.indexOf('\n', i); if (e<0) e=n;
+            flush(); out += '<span class="tok-com">'+wzEscapeHtml(code.slice(i,e))+'</span>'; i=e; continue;
+        }
+        if (lineHash && c==='#'){
+            var e = code.indexOf('\n', i); if (e<0) e=n;
+            flush(); out += '<span class="tok-com">'+wzEscapeHtml(code.slice(i,e))+'</span>'; i=e; continue;
+        }
+        if (block && c==='/' && code[i+1]==='*'){
+            var e = code.indexOf('*/', i+2); e = e<0? n : e+2;
+            flush(); out += '<span class="tok-com">'+wzEscapeHtml(code.slice(i,e))+'</span>'; i=e; continue;
+        }
+        if (c==='"' || c==="'" || c==='`'){
+            var q=c; i++; var s=q;
+            while (i<n){
+                var d=code[i];
+                if (d==='\\'){ s+=d+(code[i+1]||''); i+=2; continue; }
+                s+=d; i++;
+                if (d===q) break;
+            }
+            flush(); out += '<span class="tok-str">'+wzEscapeHtml(s)+'</span>'; continue;
+        }
+        if (/[0-9]/.test(c) || (c==='.' && /[0-9]/.test(code[i+1]||''))){
+            var j=i; while (j<n && /[0-9a-fA-FxX._]/.test(code[j])) j++;
+            flush(); out += '<span class="tok-num">'+wzEscapeHtml(code.slice(i,j))+'</span>'; i=j; continue;
+        }
+        if (lang==='html' && c==='<'){
+            if (code.substr(i,4)==='<!--'){ var e=code.indexOf('-->',i); e=e<0?n:e+3; flush(); out+='<span class="tok-com">'+wzEscapeHtml(code.slice(i,e))+'</span>'; i=e; continue; }
+            var k=i; while (k<n && code[k]!=='>') k++; if (k<n) k++;
+            flush(); out += wzHighlightHtmlTag(code.slice(i,k)); i=k; continue;
+        }
+        if (/[A-Za-z_$]/.test(c)){
+            var j=i; while (j<n && /[A-Za-z0-9_$]/.test(code[j])) j++;
+            var word = code.slice(i,j);
+            flush();
+            if (kw.indexOf(word)>=0) out += '<span class="tok-key">'+wzEscapeHtml(word)+'</span>';
+            else if (code[j]==='(') out += '<span class="tok-fn">'+wzEscapeHtml(word)+'</span>';
+            else out += wzEscapeHtml(word);
+            i=j; continue;
+        }
+        buf += c; i++;
+    }
+    flush();
+    return out;
+}
+/* HTML 标签细分着色：标签名=tok-tag，属性名=tok-attr，属性值(引号内)=tok-str，其余(< > = 空格)黑色 */
+function wzHighlightHtmlTag(tag){
+    var res = '', i = 0, n = tag.length, seenName = false;
+    while (i < n){
+        var c = tag[i];
+        if (c === '<'){ var j = i + 1; if (tag[j] === '/') j++; res += wzEscapeHtml(tag.slice(i, j)); i = j; continue; }
+        if (c === '>'){ res += wzEscapeHtml('>'); i++; continue; }
+        if (c === '"' || c === "'"){ var q = c, s = q; i++; while (i < n){ var d = tag[i]; s += d; i++; if (d === q) break; } res += '<span class="tok-str">' + wzEscapeHtml(s) + '</span>'; continue; }
+        if (/[a-zA-Z]/.test(c)){
+            var m = i; while (m < n && /[a-zA-Z0-9-]/.test(tag[m])) m++;
+            var word = tag.slice(i, m);
+            if (!seenName){ res += '<span class="tok-tag">' + wzEscapeHtml(word) + '</span>'; seenName = true; }
+            else { res += '<span class="tok-attr">' + wzEscapeHtml(word) + '</span>'; }
+            i = m; continue;
+        }
+        res += wzEscapeHtml(c); i++;
+    }
+    return res;
+}
+function wzUpdateEditor(){
+    var ta = document.getElementById('editorContent');
+    if (!ta) return;
+    var code = ta.value;
+    var codeEl = document.getElementById('wzEditorCode');
+    if (codeEl) codeEl.innerHTML = wzHighlight(code, wzCurrentLang);
+    var gutter = document.getElementById('wzEditorGutter');
+    if (gutter){
+        var lines = code.split('\n').length;
+        if (lines > 5000) lines = 5000;
+        var g = '';
+        for (var i=1;i<=lines;i++) g += '<div>'+i+'</div>';
+        gutter.innerHTML = g;
+    }
+    wzSyncScroll();
+    wzUpdateSelectionBorder();
+}
+function wzSyncScroll(){
+    var ta = document.getElementById('editorContent');
+    var pre = document.getElementById('wzEditorPre');
+    var gutter = document.getElementById('wzEditorGutter');
+    if (!ta) return;
+    if (pre){ pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; }
+    if (gutter){ gutter.scrollTop = ta.scrollTop; }
+}
+function wzUpdateSelectionBorder(){
+    var ta = document.getElementById('editorContent');
+    var wrap = document.getElementById('wzEditor');
+    if (!ta || !wrap) return;
+    if (ta.selectionStart !== ta.selectionEnd) wrap.classList.add('has-selection');
+    else wrap.classList.remove('has-selection');
+}
+function wzInitEditor(){
+    if (wzEditorInit) return; wzEditorInit = true;
+    var ta = document.getElementById('editorContent');
+    if (!ta) return;
+    ta.addEventListener('input', function(){ wzUpdateEditor(); });
+    ta.addEventListener('scroll', wzSyncScroll);
+    ta.addEventListener('keyup', wzUpdateSelectionBorder);
+    ta.addEventListener('mouseup', wzUpdateSelectionBorder);
+    ta.addEventListener('select', wzUpdateSelectionBorder);
+    ta.addEventListener('focus', wzUpdateSelectionBorder);
+    ta.addEventListener('blur', wzUpdateSelectionBorder);
+    var btn = document.getElementById('wzCopyBtn');
+    if (btn) btn.addEventListener('click', wzCopyEditor);
+}
+function wzCopyEditor(){
+    var ta = document.getElementById('editorContent');
+    if (!ta) return;
+    wzCopyText(ta.value, function(){
+        var tip = document.getElementById('wzCopyTip');
+        if (tip){ tip.classList.add('show'); clearTimeout(window._wzCopyTimer); window._wzCopyTimer = setTimeout(function(){ tip.classList.remove('show'); }, 3000); }
+    });
+}
+function wzCopyText(text, cb){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(cb, function(){ wzCopyFallback(text, cb); });
+    } else { wzCopyFallback(text, cb); }
+}
+function wzCopyFallback(text, cb){
+    var ta = document.getElementById('editorContent');
+    if (!ta) return;
+    try {
+        ta.focus(); ta.select();
+        var ok = document.execCommand('copy');
+        if (ok && cb) cb();
+    } catch(e){ if (cb) cb(); }
 }
 
 function downloadFile(path) { window.location.href = '/api/files/download?path=' + encodeURIComponent(path); }
@@ -755,27 +1007,20 @@ function deleteFile(path) {
     });
 }
 
-// 选择创建类型，切换按钮样式和输入框提示
 function selectCreateType(type) {
     var btnFile = document.getElementById('btnTypeFile');
     var btnDir = document.getElementById('btnTypeDir');
     var checkFile = document.getElementById('checkTypeFile');
     var checkDir = document.getElementById('checkTypeDir');
     var nameInput = document.getElementById('createName');
-    
     if (!btnFile || !btnDir) return;
-
     if (type === 'file') {
-        btnFile.style.borderColor = '#1890ff';
-        checkFile.checked = true;
-        btnDir.style.borderColor = 'var(--border)';
-        checkDir.checked = false;
+        btnFile.style.borderColor = '#1890ff'; checkFile.checked = true;
+        btnDir.style.borderColor = 'var(--border)'; checkDir.checked = false;
         if (nameInput) nameInput.placeholder = '输入文件名称';
     } else {
-        btnDir.style.borderColor = '#1890ff';
-        checkDir.checked = true;
-        btnFile.style.borderColor = 'var(--border)';
-        checkFile.checked = false;
+        btnDir.style.borderColor = '#1890ff'; checkDir.checked = true;
+        btnFile.style.borderColor = 'var(--border)'; checkFile.checked = false;
         if (nameInput) nameInput.placeholder = '输入文件夹名称';
     }
 }
@@ -783,7 +1028,7 @@ function selectCreateType(type) {
 function showCreateModal() { 
     var nameInput = document.getElementById('createName');
     if (nameInput) nameInput.value = ''; 
-    selectCreateType('file'); // 默认选中文件
+    selectCreateType('file'); 
     showModal('createModal'); 
 }
 
@@ -791,15 +1036,9 @@ function createItem() {
     var checkFile = document.getElementById('checkTypeFile');
     var nameEl = document.getElementById('createName');
     if (!checkFile || !nameEl) return;
-    
-    // 通过勾选框状态判断当前类型
     var type = checkFile.checked ? 'file' : 'dir';
     var name = nameEl.value;
-    if (!name) { 
-        showAlert('请输入' + (type === 'file' ? '文件名称' : '文件夹名称')); 
-        return; 
-    }
-    
+    if (!name) { showAlert('请输入' + (type === 'file' ? '文件名称' : '文件夹名称')); return; }
     var path = fixPath(currentPath + '/' + name);
     fetch('/api/files/create', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -819,50 +1058,28 @@ function showUploadModal() {
     var fileInput = document.getElementById('uploadFile');
     if (fileInput) fileInput.value = ''; 
     var progressDiv = document.getElementById('uploadProgress');
-    if (progressDiv) {
-        progressDiv.innerHTML = ''; 
-        progressDiv.style.display = 'none';
-    }
+    if (progressDiv) { progressDiv.innerHTML = ''; progressDiv.style.display = 'none'; }
     var startBtn = document.querySelector('#uploadModal .modal-footer .btn-primary');
-    if(startBtn) {
-        startBtn.disabled = false;
-        startBtn.textContent = '开始上传';
-    }
+    if(startBtn) { startBtn.disabled = false; startBtn.textContent = '开始上传'; }
     showModal('uploadModal'); 
 }
 
 function initDropZone() {
     var dropZone = document.getElementById('dropZone');
     if (!dropZone) return;
-    
     dropZone.addEventListener('click', function(e) {
         if (!e.target.closest('.btn-upload-select')) {
             var fileInput = document.getElementById('uploadFile');
             if (fileInput) fileInput.click();
         }
     });
-    
-    dropZone.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        dropZone.classList.add('dragover');
-    });
-    
-    dropZone.addEventListener('dragleave', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        dropZone.classList.remove('dragover');
-    });
-    
+    dropZone.addEventListener('dragover', function(e) { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', function(e) { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('dragover'); });
     dropZone.addEventListener('drop', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        dropZone.classList.remove('dragover');
+        e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('dragover');
         var files = e.dataTransfer.files;
         if (files && files.length > 0) {
-            for (var i = 0; i < files.length; i++) {
-                pendingFiles.push(files[i]);
-            }
+            for (var i = 0; i < files.length; i++) pendingFiles.push(files[i]);
             renderUploadList();
         }
     });
@@ -871,84 +1088,54 @@ function initDropZone() {
 function handleFileSelect(input) {
     var files = input.files;
     if (!files || files.length === 0) return;
-    for (var i = 0; i < files.length; i++) {
-        pendingFiles.push(files[i]);
-    }
+    for (var i = 0; i < files.length; i++) pendingFiles.push(files[i]);
     renderUploadList();
     input.value = ''; 
 }
 
-function removePendingFile(index) {
-    pendingFiles.splice(index, 1);
-    renderUploadList();
-}
+function removePendingFile(index) { pendingFiles.splice(index, 1); renderUploadList(); }
 
 function renderUploadList() {
     var progressDiv = document.getElementById('uploadProgress');
     if (!progressDiv) return;
-    
-    if (pendingFiles.length === 0) {
-        progressDiv.style.display = 'none';
-        progressDiv.innerHTML = '';
-        return;
-    }
-    
+    if (pendingFiles.length === 0) { progressDiv.style.display = 'none'; progressDiv.innerHTML = ''; return; }
     progressDiv.style.display = 'block';
     var html = '';
     for (var i = 0; i < pendingFiles.length; i++) {
-        var sizeKB = (pendingFiles[i].size / 1024).toFixed(2);
+        var sizeStr = formatSize(pendingFiles[i].size);
         html += '<div class="upload-list-item" id="upload-item-' + i + '">' +
-                '<span class="filename">📄 ' + pendingFiles[i].name + ' (' + sizeKB + ' KB)</span>' +
+                '<span class="filename">📄 ' + pendingFiles[i].name + ' (' + sizeStr + ')</span>' +
                 '<span class="status pending">待上传</span>' +
-                '<span class="remove-file" onclick="removePendingFile(' + i + ')">✖</span>' +
-                '</div>';
+                '<span class="remove-file" onclick="removePendingFile(' + i + ')">✖</span></div>';
     }
     progressDiv.innerHTML = html;
 }
 
 async function uploadFiles() {
     if (!pendingFiles.length) { showAlert('请选择文件'); return; }
-    
     var startBtn = document.querySelector('#uploadModal .modal-footer .btn-primary');
     if(startBtn) startBtn.disabled = true;
-    
     var existingFiles = [];
     try {
         var resp = await fetch('/api/files/list?path=' + encodeURIComponent(currentPath));
         var data = await resp.json();
-        if (data.success) {
-            data.files.forEach(function(f) { existingFiles.push(f.filename); });
-        }
+        if (data.success) data.files.forEach(function(f) { existingFiles.push(f.filename); });
     } catch(e) {}
-    
-    var conflicts = [];
-    var cleanQueue = [];
-    
+    var conflicts = [], cleanQueue = [];
     for (var i = 0; i < pendingFiles.length; i++) {
-        if (existingFiles.indexOf(pendingFiles[i].name) !== -1) {
-            conflicts.push({ index: i, name: pendingFiles[i].name });
-        } else {
-            cleanQueue.push({ file: pendingFiles[i], index: i, overwrite: false, filename: pendingFiles[i].name });
-        }
+        if (existingFiles.indexOf(pendingFiles[i].name) !== -1) conflicts.push({ index: i, name: pendingFiles[i].name });
+        else cleanQueue.push({ file: pendingFiles[i], index: i, overwrite: false, filename: pendingFiles[i].name });
     }
-    
     if (conflicts.length > 0) {
         var resolutions = [];
         if (conflicts.length === 1) {
             var res = await showSingleOverwriteModal(conflicts[0].name);
-            if (!res) { 
-                if(startBtn) startBtn.disabled = false;
-                return;
-            }
+            if (!res) { if(startBtn) startBtn.disabled = false; return; }
             resolutions.push({ index: conflicts[0].index, action: res.action, newName: res.newName });
         } else {
             resolutions = await showBatchOverwriteModal(conflicts);
-            if (!resolutions) { 
-                if(startBtn) startBtn.disabled = false;
-                return;
-            }
+            if (!resolutions) { if(startBtn) startBtn.disabled = false; return; }
         }
-        
         var existingNames = pendingFiles.map(function(f) { return f.name; });
         for (var j = 0; j < resolutions.length; j++) {
             var res = resolutions[j];
@@ -959,9 +1146,8 @@ async function uploadFiles() {
                 if (removeEl) removeEl.style.display = 'none';
             } else {
                 var item = { file: pendingFiles[res.index], index: res.index, overwrite: false, filename: pendingFiles[res.index].name };
-                if (res.action === 'overwrite') {
-                    item.overwrite = true;
-                } else if (res.action === 'rename') {
+                if (res.action === 'overwrite') item.overwrite = true;
+                else if (res.action === 'rename') {
                     item.filename = res.newName;
                     var filenameEl = document.querySelector('#upload-item-' + res.index + ' .filename');
                     if (filenameEl) filenameEl.textContent = '📄 ' + item.filename;
@@ -970,50 +1156,27 @@ async function uploadFiles() {
             }
         }
     }
-    
     if (cleanQueue.length === 0) {
         if(startBtn) startBtn.disabled = false;
         updateStatus('没有需要上传的文件');
         setTimeout(function() { closeModal('uploadModal'); }, 1000);
         return;
     }
-    
-    var activeWorkers = 0;
-    var queueIndex = 0;
-    var totalUploaded = 0;
-    
+    var activeWorkers = 0, queueIndex = 0, totalUploaded = 0;
     function startWorker() {
         while (activeWorkers < 5 && queueIndex < cleanQueue.length) {
             var item = cleanQueue[queueIndex++];
             activeWorkers++;
             uploadSingleFile(item).then(function() {
-                activeWorkers--;
-                totalUploaded++;
+                activeWorkers--; totalUploaded++;
                 if (totalUploaded === cleanQueue.length) {
-                    setTimeout(function() { 
-                        closeModal('uploadModal'); 
-                        refreshList(); 
-                        updateStatus('全部上传完成');
-                        pendingFiles = []; 
-                        renderUploadList();
-                    }, 1000);
-                } else {
-                    startWorker();
-                }
+                    setTimeout(function() { closeModal('uploadModal'); refreshList(); updateStatus('全部上传完成'); pendingFiles = []; renderUploadList(); }, 1000);
+                } else startWorker();
             }).catch(function() {
-                activeWorkers--;
-                totalUploaded++; 
+                activeWorkers--; totalUploaded++; 
                 if (totalUploaded === cleanQueue.length) {
-                    setTimeout(function() { 
-                        closeModal('uploadModal'); 
-                        refreshList(); 
-                        updateStatus('上传结束');
-                        pendingFiles = [];
-                        renderUploadList();
-                    }, 1000);
-                } else {
-                    startWorker();
-                }
+                    setTimeout(function() { closeModal('uploadModal'); refreshList(); updateStatus('上传结束'); pendingFiles = []; renderUploadList(); }, 1000);
+                } else startWorker();
             });
         }
     }
@@ -1025,20 +1188,13 @@ async function uploadSingleFile(item) {
     var removeEl = document.querySelector('#upload-item-' + item.index + ' .remove-file');
     if (removeEl) removeEl.style.display = 'none'; 
     if (statusEl) { statusEl.className = 'status uploading'; statusEl.textContent = '上传中...'; }
-    
     var formData = new FormData();
-    formData.append('path', currentPath);
-    formData.append('file', item.file, item.filename); 
-    formData.append('overwrite', item.overwrite);
-    
+    formData.append('path', currentPath); formData.append('file', item.file, item.filename); formData.append('overwrite', item.overwrite);
     try {
         var resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
         var data = await resp.json();
-        if (data.success) {
-            if (statusEl) { statusEl.className = 'status success'; statusEl.textContent = '成功'; }
-        } else {
-            if (statusEl) { statusEl.className = 'status error'; statusEl.textContent = data.msg; }
-        }
+        if (data.success) { if (statusEl) { statusEl.className = 'status success'; statusEl.textContent = '成功'; } }
+        else { if (statusEl) { statusEl.className = 'status error'; statusEl.textContent = data.msg; } }
     } catch (err) {
         if (statusEl) { statusEl.className = 'status error'; statusEl.textContent = '网络错误'; }
     }
@@ -1053,45 +1209,24 @@ function showSingleOverwriteModal(filename) {
         var skipBtn = document.getElementById('overwriteSkipBtn');
         var renameBtn = document.getElementById('overwriteRenameBtn');
         var confirmBtn = document.getElementById('overwriteConfirmBtn');
-        
-        if (!modal || !msg || !inputArea || !input || !skipBtn || !renameBtn || !confirmBtn) {
-            resolve({action: 'skip'});
-            return;
-        }
-        
-        msg.style.textAlign = 'center';
-        msg.textContent = '文件 ' + filename + ' 已存在!';
-        input.value = filename;
-        inputArea.classList.add('hidden');
-        confirmBtn.textContent = '覆盖';
-        
+        if (!modal || !msg || !inputArea || !input || !skipBtn || !renameBtn || !confirmBtn) { resolve({action: 'skip'}); return; }
+        msg.style.textAlign = 'center'; msg.textContent = '文件 ' + filename + ' 已存在!';
+        input.value = filename; inputArea.classList.add('hidden'); confirmBtn.textContent = '覆盖';
         modal.classList.remove('hidden');
-        
-        function cleanUp() {
-            modal.classList.add('hidden');
-            skipBtn.onclick = null;
-            renameBtn.onclick = null;
-            confirmBtn.onclick = null;
-        }
-        
+        function cleanUp() { modal.classList.add('hidden'); skipBtn.onclick = null; renameBtn.onclick = null; confirmBtn.onclick = null; }
         skipBtn.onclick = function() { cleanUp(); resolve({action: 'skip'}); };
         confirmBtn.onclick = function() { cleanUp(); resolve({action: 'overwrite'}); };
         renameBtn.onclick = function() {
-            inputArea.classList.remove('hidden');
-            confirmBtn.textContent = '确认重命名';
+            inputArea.classList.remove('hidden'); confirmBtn.textContent = '确认重命名';
             confirmBtn.onclick = function() { cleanUp(); resolve({action: 'rename', newName: input.value}); };
         };
     });
 }
 
 function showBatchOverwriteModal(conflicts) {
-    currentConflicts = conflicts.map(function(c) {
-        return { index: c.index, name: c.name, action: 'overwrite', selected: true };
-    });
-    
+    currentConflicts = conflicts.map(function(c) { return { index: c.index, name: c.name, action: 'overwrite', selected: true }; });
     var tbody = document.getElementById('conflictTableBody');
     if (!tbody) return Promise.resolve(null);
-    
     tbody.innerHTML = '';
     currentConflicts.forEach(function(c) {
         var tr = document.createElement('tr');
@@ -1100,13 +1235,9 @@ function showBatchOverwriteModal(conflicts) {
                        '<td><select onchange="updateConflictAction(' + c.index + ', this.value)"><option value="overwrite">覆盖</option><option value="skip">跳过</option><option value="rename">重命名</option></select></td>';
         tbody.appendChild(tr);
     });
-    
     var modal = document.getElementById('batchOverwriteModal');
     if (modal) modal.classList.remove('hidden');
-    
-    return new Promise(function(resolve) {
-        batchOverwriteResolver = resolve;
-    });
+    return new Promise(function(resolve) { batchOverwriteResolver = resolve; });
 }
 
 function updateConflictSelection(index, checked) {
@@ -1141,7 +1272,6 @@ function setBatchAction(action) {
 function confirmBatchOverwrite() {
     var modal = document.getElementById('batchOverwriteModal');
     if (modal) modal.classList.add('hidden');
-    
     var existingNames = pendingFiles.map(function(f) { return f.name; });
     var resolutions = currentConflicts.map(function(c) {
         if (c.action === 'rename') {
@@ -1150,29 +1280,19 @@ function confirmBatchOverwrite() {
             var baseName = dotIndex === -1 ? newName : newName.substring(0, dotIndex);
             var ext = dotIndex === -1 ? '' : newName.substring(dotIndex);
             var counter = 1;
-            while (existingNames.indexOf(newName) !== -1) {
-                newName = baseName + '(' + counter + ')' + ext;
-                counter++;
-            }
+            while (existingNames.indexOf(newName) !== -1) { newName = baseName + '(' + counter + ')' + ext; counter++; }
             existingNames.push(newName);
             return { index: c.index, action: 'rename', newName: newName };
         }
         return { index: c.index, action: c.action };
     });
-    
-    if (batchOverwriteResolver) {
-        batchOverwriteResolver(resolutions);
-        batchOverwriteResolver = null;
-    }
+    if (batchOverwriteResolver) { batchOverwriteResolver(resolutions); batchOverwriteResolver = null; }
 }
 
 function cancelBatchOverwrite() {
     var modal = document.getElementById('batchOverwriteModal');
     if (modal) modal.classList.add('hidden');
-    if (batchOverwriteResolver) {
-        batchOverwriteResolver(null);
-        batchOverwriteResolver = null;
-    }
+    if (batchOverwriteResolver) { batchOverwriteResolver(null); batchOverwriteResolver = null; }
 }
 
 // ====== 权限 ======
@@ -1185,41 +1305,29 @@ function showPermModal(path) {
             if (data.success) {
                 var info = data.info;
                 var perms = info.octal_permissions;
-                
-                // 填充用户组并记录原始值
                 var groupEl = document.getElementById('permGroup');
                 if (groupEl) {
                     groupEl.value = info.group || '';
                     groupEl.setAttribute('data-original', info.group || '');
-                    
-                    // 绑定输入事件，如果用户组改变，自动勾选递归
                     groupEl.oninput = function() {
                         var recursiveEl = document.getElementById('permRecursive');
-                        if (groupEl.value !== groupEl.getAttribute('data-original')) {
-                            if (recursiveEl) recursiveEl.checked = true;
-                        }
+                        if (groupEl.value !== groupEl.getAttribute('data-original')) { if (recursiveEl) recursiveEl.checked = true; }
                     };
                 }
-
-                // 如果是文件夹，自动勾选递归修改
                 var recursiveEl = document.getElementById('permRecursive');
                 if (recursiveEl) recursiveEl.checked = info.is_dir;
-
                 var permValueEl = document.getElementById('permValue');
                 if (permValueEl) permValueEl.value = perms.replace('0o', '');
-                
                 renderPermCheckboxes(parseInt(perms.replace('0o', ''), 8));
                 showModal('permModal');
             }
         });
 }
 
-// 恢复默认用户组
 function restoreDefaultGroup() {
     var groupEl = document.getElementById('permGroup');
     if (groupEl) {
         groupEl.value = 'root';
-        // 手动触发 input 事件，以触发自动勾选递归的逻辑
         var event = new Event('input');
         groupEl.dispatchEvent(event);
     }
@@ -1228,35 +1336,24 @@ function restoreDefaultGroup() {
 function renderPermCheckboxes(mode) {
     var container = document.getElementById('permCheckboxes');
     if (!container) return;
-    
-    // 清除原有的 grid 布局，防止被挤在左侧
-    container.className = '';
-    container.style.display = 'block';
-    container.style.marginTop = '20px'; 
-    container.style.paddingLeft = '0';
-    container.style.textAlign = 'center'; 
-    
+    container.className = ''; container.style.display = 'block'; container.style.marginTop = '20px'; container.style.paddingLeft = '0'; container.style.textAlign = 'center'; 
     var labels = ['所有者:', '用户组:', '公共:'];
     var perms = ['读', '写', '执行'];
     var bits = [0o400, 0o200, 0o100, 0o40, 0o20, 0o10, 0o4, 0o2, 0o1];
-    
     var html = '<div style="display: inline-flex; flex-direction: column; gap: 20px; align-items: center;">';
     for (var i = 0; i < 3; i++) {
         html += '<div style="display: flex; align-items: center;">';
         html += '<label style="width: 60px; margin: 0; text-align: left; font-weight: bold; color: #666;">' + labels[i] + '</label>';
-        
         for (var j = 0; j < 3; j++) {
             var bit = bits[i * 3 + j];
             var checked = (mode & bit) ? 'checked' : '';
             html += '<div style="display: flex; align-items: center; justify-content: center; width: 60px; margin: 0;">';
-            html += '<input type="checkbox" data-bit="' + bit + '" ' + checked + ' style="margin: 0 5px 0 0;">' + perms[j];
-            html += '</div>';
+            html += '<input type="checkbox" data-bit="' + bit + '" ' + checked + ' style="margin: 0 5px 0 0;">' + perms[j] + '</div>';
         }
         html += '</div>';
     }
     html += '</div>';
     container.innerHTML = html;
-    
     var cbs = container.querySelectorAll('input[type="checkbox"]');
     for (var k = 0; k < cbs.length; k++) { cbs[k].onchange = updatePermValue; }
 }
@@ -1264,67 +1361,40 @@ function renderPermCheckboxes(mode) {
 function updatePermValue() {
     var cbs = document.querySelectorAll('#permCheckboxes input[type="checkbox"]');
     var mode = 0;
-    for (var i = 0; i < cbs.length; i++) {
-        if (cbs[i].checked) {
-            mode |= parseInt(cbs[i].getAttribute('data-bit'));
-        }
-    }
+    for (var i = 0; i < cbs.length; i++) { if (cbs[i].checked) mode |= parseInt(cbs[i].getAttribute('data-bit')); }
     var permValueEl = document.getElementById('permValue');
     if (permValueEl) permValueEl.value = mode.toString(8);
 }
 
-// 【新增】监听输入框手动输入，实时更新勾选框
 function updatePermCheckboxes() {
     var permValueEl = document.getElementById('permValue');
     if (!permValueEl) return;
-    
     var valStr = permValueEl.value.replace('0o', '').trim();
-    
     if (!/^[0-7]{3,4}$/.test(valStr)) return;
-    
     var mode = parseInt(valStr, 8);
-    
     var cbs = document.querySelectorAll('#permCheckboxes input[type="checkbox"]');
     for (var i = 0; i < cbs.length; i++) {
         var bit = parseInt(cbs[i].getAttribute('data-bit'));
-        if (mode & bit) {
-            cbs[i].checked = true;
-        } else {
-            cbs[i].checked = false;
-        }
+        if (mode & bit) cbs[i].checked = true;
+        else cbs[i].checked = false;
     }
 }
 
-// 提交权限和用户组修改
 function setPermission() {
     var path = document.getElementById('permModal').getAttribute('data-path');
     var perm = document.getElementById('permValue').value;
     var group = document.getElementById('permGroup').value;
     var recursive = document.getElementById('permRecursive').checked;
-
     fetch('/api/files/perm', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-            path: path, 
-            perm: perm, 
-            group: group,
-            recursive: recursive 
-        })
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path: path, perm: perm, group: group, recursive: recursive })
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.success) {
-            closeModal('permModal');
-            refreshList(); 
-            updateStatus('权限/用户组修改成功');
-        } else {
-            showAlert(data.msg || '修改失败');
-        }
+        if (data.success) { closeModal('permModal'); refreshList(); updateStatus('权限/用户组修改成功'); }
+        else { showAlert(data.msg || '修改失败'); }
     })
-    .catch(function(err) {
-        showAlert('请求失败: ' + err);
-    });
+    .catch(function(err) { showAlert('请求失败: ' + err); });
 }
 
 // ====== 压缩 ======
@@ -1332,28 +1402,20 @@ var compressTargets = [];
 function showCompressModal(paths) {
     compressTargets = paths;
     var defaultName = 'archive';
-    
     if (paths.length === 1) {
         var baseName = paths[0].split('/').pop();
         var dotIndex = baseName.lastIndexOf('.');
-        if (dotIndex > 0) { 
-            baseName = baseName.substring(0, dotIndex);
-        }
+        if (dotIndex > 0) baseName = baseName.substring(0, dotIndex);
         defaultName = baseName;
     } else {
         var currentDir = currentPath.replace(/\/$/, '').split('/').pop();
-        if (currentDir) {
-            defaultName = currentDir;
-        } else {
-            defaultName = 'root'; 
-        }
+        if (currentDir) defaultName = currentDir;
+        else defaultName = 'root'; 
     }
-    
     var randomStr = Math.random().toString(36).substring(2, 6);
     var formatEl = document.getElementById('compressFormat');
     var ext = formatEl ? formatEl.value : 'tar.gz';
     var compressNameEl = document.getElementById('compressName');
-    
     if (formatEl) {
         formatEl.onchange = function() {
             if (!compressNameEl) return;
@@ -1362,9 +1424,7 @@ function showCompressModal(paths) {
             compressNameEl.value = base + '.' + formatEl.value;
         };
     }
-    
     if (compressNameEl) compressNameEl.value = defaultName + '-' + randomStr + '.' + ext;
-    
     showModal('compressModal');
 }
 
@@ -1372,22 +1432,16 @@ function compressFiles() {
     var formatEl = document.getElementById('compressFormat');
     var nameEl = document.getElementById('compressName');
     if (!formatEl || !nameEl) return;
-    
     var format = formatEl.value;
     var name = nameEl.value;
     var output = fixPath(currentPath + '/' + name);
-    
     fetch('/api/files/compress', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths: compressTargets, output: output, format: format })
     })
     .then(function(resp) { 
         return resp.text().then(function(text) {
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                throw new Error('服务器内部错误，请检查后端日志或文件权限。');
-            }
+            try { return JSON.parse(text); } catch (e) { throw new Error('服务器内部错误，请检查后端日志或文件权限。'); }
         });
     })
     .then(function(data) {
@@ -1415,7 +1469,6 @@ function extractFile(path) {
 function showContextMenu(x, y, file) {
     var menu = document.getElementById('contextMenu');
     if (!menu) return;
-    
     var html = '<div class="menu-item" onclick="contextAction(\'open\')">打开</div>' +
                '<div class="menu-item" onclick="contextAction(\'edit\')">编辑</div>' +
                '<div class="menu-item" onclick="contextAction(\'download\')">下载</div>' +
@@ -1427,78 +1480,51 @@ function showContextMenu(x, y, file) {
                '<div class="menu-item" onclick="contextAction(\'perm\')">权限</div>' +
                '<div class="menu-item" onclick="contextAction(\'compress\')">压缩</div>' +
                '<div class="menu-item" onclick="contextAction(\'info\')">属性</div>';
-    
     var exts = ['zip', 'tar', 'gz', 'tgz', 'rar', '7z'];
-    if (file && exts.indexOf(file.extension) !== -1) {
-        html += '<div class="menu-divider"></div><div class="menu-item" onclick="contextAction(\'extract\')">解压到此</div>';
-    }
+    if (file && exts.indexOf(file.extension) !== -1) html += '<div class="menu-divider"></div><div class="menu-item" onclick="contextAction(\'extract\')">解压到此</div>';
     html += '<div class="menu-divider"></div><div class="menu-item danger" onclick="contextAction(\'delete\')">删除</div>';
-    
     menu.innerHTML = html;
     menu.classList.remove('hidden');
-    
     x += 10; 
-    
-    var menuWidth = menu.offsetWidth;
-    var menuHeight = menu.offsetHeight;
+    var menuWidth = menu.offsetWidth, menuHeight = menu.offsetHeight;
     if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 5;
     if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 5;
-    
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
+    menu.style.left = x + 'px'; menu.style.top = y + 'px';
 }
 
 function bindGlobalEvents() {
     document.addEventListener('click', function(e) {
         var menu = document.getElementById('contextMenu');
-        if (menu && !e.target.closest('#contextMenu') && !menu.classList.contains('hidden')) {
-            menu.classList.add('hidden');
-        }
+        if (menu && !e.target.closest('#contextMenu') && !menu.classList.contains('hidden')) menu.classList.add('hidden');
         var dropdown = document.getElementById('favoritesDropdown');
-        if (dropdown && !e.target.closest('#favoritesDropdown') && !e.target.closest('.top-right') && !dropdown.classList.contains('hidden')) {
-            dropdown.classList.add('hidden');
-        }
+        if (dropdown && !dropdown.classList.contains('hidden') && !e.target.closest('#favoritesDropdown')) dropdown.classList.add('hidden');
     });
     document.addEventListener('contextmenu', function(e) {
-        // 【关键修复】如果在弹窗、输入框、文本域或 CodeMirror 中，放行系统默认右键菜单
-        if (e.target.closest('.modal-content') || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.closest('.CodeMirror')) {
-            return; 
-        }
-        // 只在文件列表行上拦截默认右键，显示自定义菜单
-        if (e.target.closest('tr')) { 
-            e.preventDefault(); 
-        }
+        if (e.target.closest('.modal-content') || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.closest('.action-btn')) return; 
+        if (e.target.closest('tr')) e.preventDefault(); 
     });
 }
 
 function contextAction(action) {
     var path = contextTarget;
     document.getElementById('contextMenu').classList.add('hidden');
-    
     switch(action) {
         case 'open':
             var row = document.querySelector('tr[data-path="' + path + '"]');
             var isDir = row && row.getAttribute('data-isDir') === 'true';
-            if (isDir) loadFileList(path);
-            else editFile(path);
+            if (isDir) loadFileList(path); else editFile(path);
             break;
         case 'edit': editFile(path); break;
         case 'download': downloadFile(path); break;
         case 'copy':
             clipboard = { action: 'copy', paths: [path] };
             updateStatus('已复制: ' + path);
-            var btn = document.getElementById('batchCopyBtn');
-            if (btn) btn.classList.add('active');
             break;
         case 'cut':
             clipboard = { action: 'cut', paths: [path] };
             updateStatus('已剪切: ' + path);
-            var btn = document.getElementById('batchMoveBtn');
-            if (btn) btn.classList.add('active');
             break;
-        case 'rename':
-            showRenameModal(path);
-            break;
+        case 'rename': showRenameModal(path); break;
         case 'perm': showPermModal(path); break;
         case 'compress': showCompressModal([path]); break;
         case 'extract': extractFile(path); break;
@@ -1507,7 +1533,7 @@ function contextAction(action) {
     }
 }
 
-// ====== 属性弹窗 (支持计算文件夹大小) ======
+// ====== 属性弹窗 ======
 function showFileInfo(path) {
     fetch('/api/files/info?path=' + encodeURIComponent(path))
         .then(function(resp) { return resp.json(); })
@@ -1516,12 +1542,8 @@ function showFileInfo(path) {
                 var info = data.info;
                 var infoModalBody = document.getElementById('infoModalBody');
                 if (!infoModalBody) return;
-                
                 var sizeStr = info.size_str;
-                if (info.is_dir) {
-                    sizeStr = '计算中...';
-                }
-                
+                if (info.is_dir) sizeStr = '计算中...';
                 infoModalBody.innerHTML = 
                     '<div style="line-height:2; font-size:14px;">' +
                     '<p><strong>文件名:</strong> ' + info.name + '</p>' +
@@ -1530,10 +1552,8 @@ function showFileInfo(path) {
                     '<p><strong>用户组:</strong> ' + (info.group || '-') + '</p>' +
                     '<p><strong>修改时间:</strong> ' + info.mtime_str + '</p>' +
                     '<p style="margin-bottom: 0; word-break: break-all;"><strong>路径:</strong>&nbsp;<span id="copyPath" style="cursor:pointer;color:var(--primary);font-weight:bold;" title="点击复制">' + info.path + '</span>&nbsp;&nbsp;<span id="copyIcon" style="cursor:pointer;font-size:16px;">📋</span></p>' +
-                    '<div id="pathCopyHint" class="copy-hint"></div>' +
-                    '</div>';
+                    '<div id="pathCopyHint" class="copy-hint"></div></div>';
                 showModal('infoModal');
-                
                 if (info.is_dir) {
                     fetch('/api/system/dir-size?path=' + encodeURIComponent(path))
                         .then(function(r) { return r.json(); })
@@ -1544,11 +1564,9 @@ function showFileInfo(path) {
                             }
                         });
                 }
-                
                 var copyPathEl = document.getElementById('copyPath');
                 var copyIconEl = document.getElementById('copyIcon');
                 var hintEl = document.getElementById('pathCopyHint');
-                
                 function doCopy() {
                     copyToClipboard(info.path);
                     if (hintEl) {
@@ -1557,7 +1575,6 @@ function showFileInfo(path) {
                         setTimeout(function() { hintEl.classList.remove('show'); }, 3000);
                     }
                 }
-                
                 if (copyPathEl) copyPathEl.onclick = doCopy;
                 if (copyIconEl) copyIconEl.onclick = doCopy;
             }
@@ -1566,26 +1583,17 @@ function showFileInfo(path) {
 
 function copyToClipboard(text) {
     if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).catch(function() {
-            fallbackCopyTextToClipboard(text);
-        });
-    } else {
-        fallbackCopyTextToClipboard(text);
-    }
+        navigator.clipboard.writeText(text).catch(function() { fallbackCopyTextToClipboard(text); });
+    } else { fallbackCopyTextToClipboard(text); }
 }
 
 function fallbackCopyTextToClipboard(text) {
     var textArea = document.createElement("textarea");
     textArea.value = text;
-    textArea.style.top = "0";
-    textArea.style.left = "0";
-    textArea.style.position = "fixed";
+    textArea.style.top = "0"; textArea.style.left = "0"; textArea.style.position = "fixed";
     document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    try {
-        var successful = document.execCommand('copy');
-    } catch (err) {}
+    textArea.focus(); textArea.select();
+    try { var successful = document.execCommand('copy'); } catch (err) {}
     document.body.removeChild(textArea);
 }
 
@@ -1598,62 +1606,50 @@ function loadTrashFiles() {
     var tbody = document.getElementById('trashTableBody');
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="5" class="loading">加载中...</td></tr>';
-    selectedTrashIds.clear();
-    updateTrashBatchBtns();
-    
+    selectedTrashIds.clear(); updateTrashBatchBtns();
     fetch('/api/trash/list')
         .then(function(resp){ return resp.json(); })
         .then(function(data) {
             tbody.innerHTML = '';
             if (data.success && data.files) {
-                if (data.files.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="loading">回收站为空</td></tr>';
-                    return;
-                }
+                if (data.files.length === 0) { tbody.innerHTML = '<tr><td colspan="5" class="loading">回收站为空</td></tr>'; return; }
                 data.files.forEach(function(file) {
                     var tr = document.createElement('tr');
-                    
                     if (file.filename && file.filename.includes('.')) {
-                        file.extension = file.filename.split('.').pop().toLowerCase();
-                        file.is_dir = false; 
-                    } else {
-                        file.extension = '';
-                    }
-                    
+                        file.extension = file.filename.split('.').pop().toLowerCase(); file.is_dir = false; 
+                    } else { file.extension = ''; file.is_link = true; }
                     var icon = getFileIcon(file);
                     
+                    // 【修改】重新排列按钮：还原、下载、删除
+                    var actionsHtml = '<button class="action-btn" onclick="restoreTrashItem(\'' + file.trash_id + '\')">还原</button>';
+                    // 如果不是文件夹，则显示下载按钮
+                    if (!file.is_dir) {
+                        actionsHtml += '<button class="action-btn" onclick="downloadTrashItem(\'' + file.trash_id + '\', \'' + file.filename.replace(/'/g, "\\'") + '\')" style="margin-left:5px;">下载</button>';
+                    }
+                    actionsHtml += '<button class="action-btn danger" onclick="deleteTrashItem(\'' + file.trash_id + '\')" style="margin-left:5px;">删除</button>';
+
                     tr.innerHTML = '<td class="col-checkbox"><input type="checkbox" data-id="' + file.trash_id + '" onclick="event.stopPropagation()" onchange="toggleSelectTrash(this, \'' + file.trash_id + '\')"></td>' +
                                    '<td><span class="file-icon">' + icon + '</span><span title="' + file.original_path + '">' + file.filename + '</span><br><small style="color:#999;">原路径: ' + file.original_path + '</small></td>' +
                                    '<td>' + (file.is_dir ? '-' : (file.size_str || '-')) + '</td>' + 
                                    '<td>' + (file.mtime_str || '-') + '</td>' +
-                                   '<td>' +
-                                   '<button class="action-btn" onclick="restoreTrashItem(\'' + file.trash_id + '\')">还原</button>' +
-                                   '<button class="action-btn danger" onclick="deleteTrashItem(\'' + file.trash_id + '\')" style="margin-left:5px;">彻底删除</button>' +
-                                   '</td>';
+                                   '<td>' + actionsHtml + '</td>';
                     tbody.appendChild(tr);
                 });
-            } else {
-                tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">' + (data.msg || '读取回收站失败') + '</td></tr>';
-            }
+            } else { tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">' + (data.msg || '读取回收站失败') + '</td></tr>'; }
         });
 }
 
-function toggleSelectTrash(cb, id) {
-    if (cb.checked) selectedTrashIds.add(id);
-    else selectedTrashIds.delete(id);
-    updateTrashBatchBtns();
+function downloadTrashItem(trash_id, filename) {
+    // 触发下载，后端需要实现 /api/trash/download 接口
+    window.location.href = '/api/trash/download?trash_id=' + encodeURIComponent(trash_id);
 }
+
+function toggleSelectTrash(cb, id) { if (cb.checked) selectedTrashIds.add(id); else selectedTrashIds.delete(id); updateTrashBatchBtns(); }
 
 function toggleSelectAllTrash(cb) {
     var cbs = document.querySelectorAll('#trashTableBody input[type="checkbox"]');
     selectedTrashIds.clear();
-    cbs.forEach(function(c) {
-        c.checked = cb.checked;
-        if (cb.checked) {
-            var id = c.getAttribute('data-id');
-            if (id) selectedTrashIds.add(id);
-        }
-    });
+    cbs.forEach(function(c) { c.checked = cb.checked; if (cb.checked) { var id = c.getAttribute('data-id'); if (id) selectedTrashIds.add(id); } });
     updateTrashBatchBtns();
 }
 
@@ -1673,25 +1669,18 @@ function restoreTrashItem(trash_id) {
     .then(function(resp){ return resp.json(); })
     .then(function(data) {
         if (data.success) { 
-            loadTrashFiles(); 
-            updateStatus(data.msg);
-            
+            loadTrashFiles(); updateStatus(data.msg);
             if (data.target_path) {
                 var targetDir = data.target_path.substring(0, data.target_path.lastIndexOf('/')) || '/';
-                if (fixPath(targetDir) === fixPath(currentPath)) {
-                    refreshList(); 
-                }
+                if (fixPath(targetDir) === fixPath(currentPath)) refreshList(); 
             }
-        } else { 
-            showAlert(data.msg); 
-        }
+        } else { showAlert(data.msg); }
     });
 }
 
 async function deleteTrashItem(trash_id) {
     var confirmed = await showConfirmModal('确认删除', '确定彻底删除该文件吗？');
     if (!confirmed) return;
-    
     var resp = await fetch('/api/trash/delete', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ trash_id: trash_id })
@@ -1708,27 +1697,19 @@ async function restoreSelectedTrash() {
         body: JSON.stringify({ trash_ids: Array.from(selectedTrashIds) })
     });
     var data = await resp.json();
-    if (data.success) { 
-        loadTrashFiles(); 
-        refreshList(); 
-        updateStatus(data.msg); 
-    }
+    if (data.success) { loadTrashFiles(); refreshList(); updateStatus(data.msg); }
 }
 
 async function deleteSelectedTrash() {
     if (selectedTrashIds.size === 0) return;
     var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + selectedTrashIds.size + ' 个文件吗？');
     if (!confirmed) return;
-    
     var resp = await fetch('/api/trash/delete-batch', {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ trash_ids: Array.from(selectedTrashIds) })
     });
     var data = await resp.json();
-    if (data.success) { 
-        loadTrashFiles(); 
-        updateStatus(data.msg); 
-    }
+    if (data.success) { loadTrashFiles(); updateStatus(data.msg); }
 }
 
 function showConfirmModal(title, msg) {
@@ -1738,12 +1719,9 @@ function showConfirmModal(title, msg) {
         var modal = document.getElementById('confirmModal');
         var okBtn = document.getElementById('confirmOkBtn');
         var cancelBtn = document.getElementById('confirmCancelBtn');
-        
         if (!modal || !okBtn || !cancelBtn) { resolve(false); return; }
-        
         if (titleEl) titleEl.textContent = title;
         if (msgEl) msgEl.textContent = msg;
-        
         modal.classList.remove('hidden');
         okBtn.onclick = function() { modal.classList.add('hidden'); resolve(true); };
         cancelBtn.onclick = function() { modal.classList.add('hidden'); resolve(false); };
@@ -1753,7 +1731,6 @@ function showConfirmModal(title, msg) {
 async function clearTrash() {
     var confirmed = await showConfirmModal('确认清空', '确定要清空回收站吗？');
     if (!confirmed) return;
-    
     fetch('/api/trash/clear', { method: 'POST' })
         .then(function(resp){ return resp.json(); })
         .then(function(data) {
@@ -1766,17 +1743,11 @@ function toggleTrashEnabled() {
     var btn = document.getElementById('trashToggleBtn');
     if (!btn) return;
     if (btn.textContent === '关闭回收站') {
-        btn.textContent = '开启回收站';
-        btn.classList.add('btn-primary');
-        btn.classList.remove('btn-default');
-        trashEnabled = false; 
-        updateStatus('回收站已关闭，后续将直接彻底删除');
+        btn.textContent = '开启回收站'; btn.classList.add('btn-primary'); btn.classList.remove('btn-default');
+        trashEnabled = false; updateStatus('回收站已关闭，后续将直接彻底删除');
     } else {
-        btn.textContent = '关闭回收站';
-        btn.classList.remove('btn-primary');
-        btn.classList.add('btn-default');
-        trashEnabled = true; 
-        updateStatus('回收站已开启');
+        btn.textContent = '关闭回收站'; btn.classList.remove('btn-primary'); btn.classList.add('btn-default');
+        trashEnabled = true; updateStatus('回收站已开启');
     }
 }
 
@@ -1797,7 +1768,6 @@ function loadConfig() {
                 var serverPortEl = document.getElementById('serverPort');
                 var oldPasswordEl = document.getElementById('oldPassword');
                 var serverInfoEl = document.getElementById('serverInfoDisplay');
-                
                 if (sshHostEl) sshHostEl.value = c.ssh.host || '';
                 if (sshPortEl) sshPortEl.value = c.ssh.port || 22;
                 if (sshUserEl) sshUserEl.value = c.ssh.username || 'root';
@@ -1806,78 +1776,52 @@ function loadConfig() {
                 if (serverHostEl) serverHostEl.value = c.server.host || '0.0.0.0';
                 if (serverPortEl) serverPortEl.value = c.server.port || '';
                 if (oldPasswordEl) oldPasswordEl.value = c.auth.password || '';
-                
                 if (serverInfoEl) {
                     var port = c.server.port || '未分配';
                     serverInfoEl.innerHTML = '<strong>当前配置信息</strong><br>监听: ' + c.server.host + ':' + port + '<br>会话超时: ' + c.auth.session_timeout + ' 秒<br>最大尝试: ' + c.auth.max_attempts + ' 次<br>锁定时间: ' + c.auth.lock_minutes + ' 分钟';
                 }
-
-                // 【新增】读取并填充启动主页配置
                 var homePathInput = document.getElementById('customHomePath');
                 var homePathMsg = document.getElementById('homePathMsg');
-                if (homePathInput) {
-                    homePathInput.value = (c.server && c.server.home_path) ? c.server.home_path : '/';
-                }
-                if (homePathMsg) {
-                    homePathMsg.textContent = ''; // 打开设置时清空提示
-                }
+                if (homePathInput) homePathInput.value = (c.server && c.server.home_path) ? c.server.home_path : '/';
+                if (homePathMsg) homePathMsg.textContent = ''; 
             }
         });
 }
 
-// 【新增】恢复默认主页
 var homePathTimer = null;
 function showHomePathMsg(elId, msg, color) {
     var el = document.getElementById(elId);
     if (!el) return;
-    el.style.color = color;
-    el.textContent = msg;
+    el.style.color = color; el.textContent = msg;
     if (homePathTimer) clearTimeout(homePathTimer);
-    homePathTimer = setTimeout(function() {
-        el.textContent = ''; // 3秒后清空文本
-    }, 3000);
+    homePathTimer = setTimeout(function() { el.textContent = ''; }, 3000);
 }
 
-// 恢复默认主页
 function resetHomePath() {
     var homePathInput = document.getElementById('customHomePath');
     if (homePathInput) homePathInput.value = '/';
-    
     fetch('/api/config/home-path', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ path: '/' })
     })
     .then(r => r.json())
-    .then(data => {
-        // 在“恢复默认”按钮下方显示提示
-        showHomePathMsg('resetHomeMsg', '已恢复/主页', '#20a53a');
-    });
+    .then(data => { showHomePathMsg('resetHomeMsg', '已恢复/主页', '#20a53a'); });
 }
 
-// 保存自定义主页
 function saveHomePath() {
     var homePathInput = document.getElementById('customHomePath');
     var path = homePathInput ? homePathInput.value.trim() : '/';
-    
     fetch('/api/config/home-path', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ path: path })
     })
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            if (homePathInput) homePathInput.value = data.path; // 显示后端处理后的最终路径
-            if (data.path === '/' && path !== '/') {
-                // 在“保存”按钮下方显示提示
-                showHomePathMsg('saveHomeMsg', '路径无效或为文件，已恢复为 /', '#ff4d4f');
-            } else {
-                showHomePathMsg('saveHomeMsg', '已添加成功', '#20a53a');
-            }
-        } else {
-            showHomePathMsg('saveHomeMsg', data.msg || '保存失败', '#ff4d4f');
-        }
+            if (homePathInput) homePathInput.value = data.path;
+            if (data.path === '/' && path !== '/') showHomePathMsg('saveHomeMsg', '路径无效或为文件，已恢复为 /', '#ff4d4f');
+            else showHomePathMsg('saveHomeMsg', '已添加成功', '#20a53a');
+        } else { showHomePathMsg('saveHomeMsg', data.msg || '保存失败', '#ff4d4f'); }
     });
 }
 
@@ -1886,7 +1830,6 @@ function toggleAuthType() {
     var pwdAuth = document.getElementById('passwordAuth');
     var keyAuth = document.getElementById('keyAuth');
     if (!typeEl || !pwdAuth || !keyAuth) return;
-    
     var type = typeEl.value;
     if (type === 'password') { pwdAuth.style.display = 'block'; keyAuth.style.display = 'none'; } 
     else { pwdAuth.style.display = 'none'; keyAuth.style.display = 'block'; }
@@ -1900,7 +1843,6 @@ function saveSSHConfig() {
     var sshPasswordEl = document.getElementById('sshPassword');
     var sshKeyPathEl = document.getElementById('sshKeyPath');
     var sshKeyPasswordEl = document.getElementById('sshKeyPassword');
-    
     var data = {
         host: sshHostEl ? sshHostEl.value : '',
         port: sshPortEl ? parseInt(sshPortEl.value) : 22,
@@ -1916,15 +1858,10 @@ function saveSSHConfig() {
     })
     .then(function(resp) { return resp.json(); })
     .then(function(result) {
-        if (result.success) { 
-            window.location.reload(); 
-        } else { 
-            showAlert("SSH连接失败: " + result.msg); 
-        }
+        if (result.success) window.location.reload(); 
+        else showAlert("SSH连接失败: " + result.msg); 
     })
-    .catch(function(err) {
-        showAlert('请求失败: ' + err);
-    });
+    .catch(function(err) { showAlert('请求失败: ' + err); });
 }
 
 function changePassword() {
@@ -1932,10 +1869,7 @@ function changePassword() {
     var newPwdEl = document.getElementById('newPassword');
     var confirmPwdEl = document.getElementById('confirmPassword');
     if (!oldPwdEl || !newPwdEl || !confirmPwdEl) return;
-    
-    var oldPwd = oldPwdEl.value;
-    var newPwd = newPwdEl.value;
-    var confirmPwd = confirmPwdEl.value;
+    var oldPwd = oldPwdEl.value, newPwd = newPwdEl.value, confirmPwd = confirmPwdEl.value;
     if (newPwd !== confirmPwd) { showAlert('两次密码不一致'); return; }
     if (newPwd.length < 6) { showAlert('密码至少6位'); return; }
     fetch('/api/config/password', {
@@ -1953,12 +1887,7 @@ function saveServerConfig() {
     var serverHostEl = document.getElementById('serverHost');
     var serverPortEl = document.getElementById('serverPort');
     if (!serverHostEl || !serverPortEl) return;
-    
-    var data = {
-        host: serverHostEl.value,
-        port: parseInt(serverPortEl.value),
-        auto_port: true
-    };
+    var data = { host: serverHostEl.value, port: parseInt(serverPortEl.value), auto_port: true };
     fetch('/api/config/server', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -1973,36 +1902,20 @@ function saveServerConfig() {
 function switchTab(tab) {
     var btns = document.querySelectorAll('.tab-btn');
     var contents = document.querySelectorAll('.tab-content');
-    for (var i = 0; i < btns.length; i++) { btns[i].classList.remove('active'); }
-    for (var j = 0; j < contents.length; j++) { contents[j].classList.remove('active'); }
-    
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+    for (var j = 0; j < contents.length; j++) contents[j].classList.remove('active');
     var e = window.event || arguments.callee.caller.arguments[0];
     var target = e.target || e.srcElement;
     if (target) target.classList.add('active');
-    
     var tabEl = document.getElementById('tab-' + tab);
     if (tabEl) tabEl.classList.add('active');
 }
 
 // ====== 辅助函数 ======
-function showModal(id) { 
-    var el = document.getElementById(id);
-    if (el) el.classList.remove('hidden'); 
-}
-function closeModal(id) { 
-    var el = document.getElementById(id);
-    if (el) el.classList.add('hidden'); 
-}
-function showAlert(msg) { 
-    var el = document.getElementById('alertMsg');
-    if (el) el.textContent = msg; 
-    showModal('alertModal'); 
-}
-
-function updateStatus(msg) { 
-    var el = document.getElementById('statusInfo');
-    if (el) el.textContent = msg; 
-}
+function showModal(id) { var el = document.getElementById(id); if (el) el.classList.remove('hidden'); }
+function closeModal(id) { var el = document.getElementById(id); if (el) el.classList.add('hidden'); }
+function showAlert(msg) { var el = document.getElementById('alertMsg'); if (el) el.textContent = msg; showModal('alertModal'); }
+function updateStatus(msg) { var el = document.getElementById('statusInfo'); if (el) el.textContent = msg; }
 
 function checkSSHStatus() {
     fetch('/api/ssh/status')
@@ -2010,38 +1923,22 @@ function checkSSHStatus() {
         .then(function(data) {
             var el = document.getElementById('sshStatus');
             if (!el) return;
-            if (data.connected) {
-                el.textContent = 'SSH: 已连接 ' + data.host;
-                el.classList.remove('disconnected');
-            } else {
-                el.textContent = 'SSH: 未连接 (' + data.message + ')';
-                el.classList.add('disconnected');
-            }
+            if (data.connected) { el.textContent = 'SSH: 已连接 ' + data.host; el.classList.remove('disconnected'); }
+            else { el.textContent = 'SSH: 未连接 (' + data.message + ')'; el.classList.add('disconnected'); }
         })
-        .catch(function(err) { 
-            var el = document.getElementById('sshStatus');
-            if (el) el.textContent = 'SSH: 检查失败'; 
-        });
+        .catch(function(err) { var el = document.getElementById('sshStatus'); if (el) el.textContent = 'SSH: 检查失败'; });
 }
 
-function logout() {
-    fetch('/api/logout', { method: 'POST' })
-        .then(function(){ window.location.href = '/login'; });
-}
+function logout() { fetch('/api/logout', { method: 'POST' }).then(function(){ window.location.href = '/login'; }); }
 
 function pasteFiles() {
-    if (!clipboard.paths.length) { 
-        showAlert('剪贴板为空'); 
-        return; 
-    }
+    if (!clipboard.paths.length) { showAlert('剪贴板为空'); return; }
     var sequence = Promise.resolve();
-    
     clipboard.paths.forEach(function(path) {
         sequence = sequence.then(function() {
             var name = path.split('/').pop();
             var target = fixPath(currentPath + '/' + name);
             var overwrite = false;
-            
             function attemptPaste() {
                 var api = clipboard.action === 'copy' ? '/api/files/copy' : '/api/files/move';
                 return fetch(api, {
@@ -2050,38 +1947,26 @@ function pasteFiles() {
                 })
                 .then(function(resp){ return resp.json(); })
                 .then(function(data) {
-                    if (data.success) { return; } 
+                    if (data.success) return; 
                     else if (data.code === 'exists') {
-                        return showConfirmModal('文件冲突', '文件 ' + name + ' 已存在！\n点击“确定”覆盖，点击“取消”保留为副本。').then(function(choice) {
+                        return showConfirmModal('文件冲突', '文件 ' + name + ' 已存在！\n点击"确定"覆盖，点击"取消"跳过该文件。').then(function(choice) {
                             if (choice) { 
                                 overwrite = true; 
                                 return attemptPaste(); 
                             } else {
-                                var dotIndex = name.lastIndexOf('.');
-                                if (dotIndex === -1) name = name + '(副本)';
-                                else name = name.substring(0, dotIndex) + '(副本)' + name.substring(dotIndex);
-                                target = fixPath(currentPath + '/' + name);
-                                overwrite = false;
-                                return attemptPaste();
+                                // 点击取消，直接跳过该文件，不再执行粘贴
+                                return; 
                             }
                         });
-                    } else { 
-                        showAlert(data.msg); 
-                    }
+                    } else { showAlert(data.msg); }
                 });
             }
             return attemptPaste();
         });
     });
-    
     sequence.then(function() {
         clipboard = { action: null, paths: [] };
-        var copyBtn = document.getElementById('batchCopyBtn');
-        var moveBtn = document.getElementById('batchMoveBtn');
-        if (copyBtn) copyBtn.classList.remove('active');
-        if (moveBtn) moveBtn.classList.remove('active');
-        refreshList();
-        updateStatus('粘贴完成');
+        refreshList(); updateStatus('粘贴完成');
     });
 }
 
@@ -2093,96 +1978,65 @@ function performSearch() {
     var keyword = document.getElementById('searchInput').value.trim();
     if (!keyword) { showAlert('请输入搜索关键词'); return; }
     var recursive = document.getElementById('searchRecursive').checked;
-    
     showModal('searchModal');
     var tbody = document.getElementById('searchTableBody');
     tbody.innerHTML = '<tr><td colspan="5" class="loading">文件搜索中...请稍等!</td></tr>';
     var info = document.getElementById('searchInfo');
     info.textContent = '正在搜索: "' + keyword + '" (包含子目录: ' + (recursive ? '是' : '否') + ')，请稍等...';
     searchSelectedPaths.clear();
-    
     fetch('/api/files/search?path=' + encodeURIComponent(currentPath) + '&keyword=' + encodeURIComponent(keyword) + '&recursive=' + recursive)
         .then(function(resp) { return resp.json(); })
-        .then(function(data) {
-            renderSearchResults(data, keyword);
-        })
-        .catch(function(err) {
-            tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">请求失败: ' + err + '</td></tr>';
-        });
+        .then(function(data) { renderSearchResults(data, keyword); })
+        .catch(function(err) { tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">请求失败: ' + err + '</td></tr>'; });
 }
 
 function renderSearchResults(data, keyword) {
     var tbody = document.getElementById('searchTableBody');
     var info = document.getElementById('searchInfo');
-    tbody.innerHTML = '';
-    searchSelectedPaths.clear();
-    
+    tbody.innerHTML = ''; searchSelectedPaths.clear();
     if (!data.success) {
         info.textContent = '搜索失败';
         tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:red;">' + (data.msg || '搜索失败') + '</td></tr>';
         return;
     }
-    
     var items = data.items || [];
     currentSearchResults = items;
-    
     if (items.length === 0) {
         info.textContent = '搜索完成';
-        tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:#999; padding: 40px 0;"><svg t="1784036340209" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2796" width="40" height="40" style="vertical-align: middle; margin-right: 10px;"><path d="M955.9 928.2L847.6 819.9c-9.1 10.6-18.9 20.4-29.4 29.4l108.3 108.3c8.1 8.1 21.3 8.1 29.4 0 8.2-8.1 8.2-21.2 0-29.4zM541.4 538.9h122.7v-40c-6.8-1-13.7-1.7-20.8-1.7-39.7 0.1-75.6 16-101.9 41.7z" fill="#646464" p-id="2797"></path><path d="M643.3 414.1c-126.4 0-228.9 102.5-228.9 228.9s102.5 228.9 228.9 228.9S872.2 769.4 872.2 643c0-126.5-102.5-228.9-228.9-228.9z m0 416.2C539.8 830.3 456 746.4 456 643c0-103.5 83.9-187.3 187.3-187.3S830.6 539.5 830.6 643c0 103.4-83.9 187.3-187.3 187.3z" fill="#646464" p-id="2798"></path><path d="M809.7 351.5l-6-14.6L546.8 60.2h-403c-46 0-83.3 37.3-83.3 83.3v624.4c0 46 37.3 83.2 83.3 83.2h263.6c11.5 0 20.8-9.3 20.8-20.8s-9.3-20.8-20.8-20.8H143.8c-23 0-41.6-18.6-41.6-41.6V143.5c0-23 18.6-41.6 41.6-41.6h374.6v187.3c0 46 37.3 83.2 83.3 83.2h166.5v38.4c0 11.5 9.3 20.8 20.8 20.8s20.8-9.3 20.8-20.8V351.6l-0.1-0.1z m-208.1-20.7c-23 0-41.6-18.6-41.6-41.6V136.5l182.2 194.4H601.6z" fill="#646464" p-id="2799"></path><path d="M400.9 289.8H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h194.7c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM400.9 414.7H206.2c-11.8 0-21.5-9.6-21.5-21.5s9.6-21.5 21.5-21.5h194.7c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM374.1 539.6H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h167.9c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM360.7 664.4H206.2c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h154.5c11.8 0 21.5 9.6 21.5 21.5s-9.6 21.5-21.5 21.5zM658.1 664.4H503.6c-11.8 0-21.5-9.6-21.5-21.5 0-11.8 9.6-21.5 21.5-21.5h154.5c11.8 0 21.5 9.6 21.5 21.5-0.1 11.9-9.7 21.5-21.5 21.5z" fill="#646464" p-id="2800"></path></svg>未搜索到与关键词相关的文件或目录</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="loading" style="color:#999; padding: 40px 0;">未搜索到与关键词相关的文件或目录</td></tr>';
         return;
     }
-    
     info.textContent = '搜索完成，共找到 ' + items.length + ' 个结果';
-    
     items.forEach(function(item) {
         var tr = document.createElement('tr');
         tr.setAttribute('data-path', item.path);
         tr.setAttribute('data-isdir', item.is_dir);
-        
         var icon = item.is_dir ? '📁' : getFileIcon(item);
-        
         var btnStyle = 'style="height: 28px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; margin-left: 0; margin-right: 5px;"';
-        
         var actionsHtml = '';
-        if (!item.is_dir) {
-            actionsHtml += '<button class="action-btn" ' + btnStyle + ' onclick="event.stopPropagation(); editFile(\'' + item.path.replace(/'/g, "\\'") + '\')">编辑</button>';
-        }
+        if (!item.is_dir) actionsHtml += '<button class="action-btn" ' + btnStyle + ' onclick="event.stopPropagation(); editFile(\'' + item.path.replace(/'/g, "\\'") + '\')">编辑</button>';
         actionsHtml += '<button class="action-btn" ' + btnStyle + ' onclick="event.stopPropagation(); copyToClipboard(\'' + item.path.replace(/'/g, "\\'") + '\')">复制路径</button>';
         actionsHtml += '<button class="action-btn danger" ' + btnStyle + ' onclick="event.stopPropagation(); deleteSingleSearchItem(\'' + item.path.replace(/'/g, "\\'") + '\')">删除</button>';
-        
         var nameHtml = '<span class="file-icon">' + icon + '</span><span class="' + (item.is_dir ? 'dir-name' : 'file-name') + '">' + item.name + '</span><br><small style="color:#999; word-break: break-all; display: block; margin-top: 4px;">位置: ' + item.path + '</small>';
-                       
         tr.innerHTML = '<td class="col-checkbox" style="vertical-align: middle;"></td>' +
                        '<td style="cursor: pointer; vertical-align: middle;">' + nameHtml + '</td>' +
                        '<td class="col-size" style="vertical-align: middle;">' + (item.is_dir ? '-' : item.size_str) + '</td>' +
                        '<td style="vertical-align: middle;">' + item.mtime_str + '</td>' +
                        '<td class="col-actions" style="white-space: nowrap; vertical-align: middle; text-align: right; padding-right: 30px;">' + actionsHtml + '</td>';
-                       
         var checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.setAttribute('data-path', item.path);
+        checkbox.type = 'checkbox'; checkbox.setAttribute('data-path', item.path);
         checkbox.onclick = function(e) { e.stopPropagation(); };
         checkbox.onchange = function() { toggleSearchSelect(this, item.path); };
         tr.querySelector('.col-checkbox').appendChild(checkbox);
-                       
         tr.onclick = function() {
-            if (item.is_dir) {
-                closeModal('searchModal');
-                loadFileList(item.path);
-            } else {
-                var dir = item.path.substring(0, item.path.lastIndexOf('/')) || '/';
-                closeModal('searchModal');
-                loadFileList(dir);
-            }
+            if (item.is_dir) { closeModal('searchModal'); loadFileList(item.path); } 
+            else { var dir = item.path.substring(0, item.path.lastIndexOf('/')) || '/'; closeModal('searchModal'); loadFileList(dir); }
         };
         tbody.appendChild(tr);
     });
 }
 
-function toggleSearchSelect(cb, path) {
-    if (cb.checked) searchSelectedPaths.add(path);
-    else searchSelectedPaths.delete(path);
-}
+function toggleSearchSelect(cb, path) { if (cb.checked) searchSelectedPaths.add(path); else searchSelectedPaths.delete(path); }
 
 function toggleSearchSelectAll(cb) {
     var cbs = document.querySelectorAll('#searchTableBody input[type="checkbox"]');
@@ -2190,102 +2044,67 @@ function toggleSearchSelectAll(cb) {
     for (var i = 0; i < cbs.length; i++) {
         cbs[i].checked = cb.checked;
         var path = cbs[i].getAttribute('data-path');
-        if (cb.checked && path) {
-            searchSelectedPaths.add(path);
-        }
+        if (cb.checked && path) searchSelectedPaths.add(path);
     }
 }
 
-// 打开选中的项（参考占用分析逻辑）
 function openSearchItem() {
-    if (searchSelectedPaths.size === 0) { 
-        showAlert('请选择一个要打开的文件或文件夹'); 
-        return; 
-    }
-    if (searchSelectedPaths.size > 1) { 
-        showAlert('请只选择一个项打开'); 
-        return; 
-    }
-    
+    if (searchSelectedPaths.size === 0) { showAlert('请选择一个要打开的文件或文件夹'); return; }
+    if (searchSelectedPaths.size > 1) { showAlert('请只选择一个项打开'); return; }
     var selectedPath = Array.from(searchSelectedPaths)[0];
     var selectorPath = (window.CSS && CSS.escape) ? CSS.escape(selectedPath) : selectedPath;
     var row = document.querySelector('#searchTableBody tr[data-path="' + selectorPath + '"]');
     var isDir = row ? (String(row.getAttribute('data-isdir')).toLowerCase() === 'true') : false;
     var targetPath = '';
-    
-    if (isDir) {
-        targetPath = fixPath(selectedPath);
-    } else {
+    if (isDir) targetPath = fixPath(selectedPath);
+    else {
         var normalized = String(selectedPath).replace(/\\/g, '/');
         var idx = normalized.lastIndexOf('/');
         targetPath = (idx > 0) ? normalized.slice(0, idx) : '/';
         targetPath = fixPath(targetPath);
     }
-    
-    closeModal('searchModal');
-    loadFileList(targetPath);
+    closeModal('searchModal'); loadFileList(targetPath);
 }
 
-// 单个删除
-async function deleteSingleSearchItem(path) {
-    var fileName = path.split('/').pop();
-    // 【关键修复】根据回收站状态显示对应提示
-    var msg = trashEnabled ? '确定将 ' + fileName + ' 移入回收站吗？' : '确定彻底删除 ' + fileName + ' 吗？';
-    var confirmed = await showConfirmModal('确认删除', msg);
-    if (!confirmed) return;
-    
-    await fetch('/api/files/delete', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path, permanent: !trashEnabled })
-    });
-    
-    // 重新搜索以实时更新列表
-    performSearch(); 
-    refreshList(); 
-}
-
-// 批量删除选中项
 async function deleteSearchItems() {
-    if (searchSelectedPaths.size === 0) { 
-        showAlert('请先选择要删除的项'); 
-        return; 
-    }
-    var count = searchSelectedPaths.size;
-    // 【关键修复】根据回收站状态显示对应提示
-    var msg = trashEnabled ? '确定将选中的 ' + count + ' 个文件移入回收站吗？' : '确定彻底删除选中的 ' + count + ' 个文件吗？';
-    var confirmed = await showConfirmModal('确认删除', msg);
+    if (searchSelectedPaths.size === 0) { showAlert('请先选择要删除的项'); return; }
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除选中的 ' + searchSelectedPaths.size + ' 个文件吗？');
     if (!confirmed) return;
-
     for (var p of searchSelectedPaths) {
         await fetch('/api/files/delete', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: p, permanent: !trashEnabled })
         });
     }
-    searchSelectedPaths.clear();
-    // 重新搜索以实时更新列表
-    performSearch(); 
-    refreshList(); 
+    performSearch(); refreshList(); 
+}
+
+async function deleteSingleSearchItem(path) {
+    var confirmed = await showConfirmModal('确认删除', '确定彻底删除 ' + path.split('/').pop() + ' 吗？');
+    if (!confirmed) return;
+    await fetch('/api/files/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, permanent: !trashEnabled })
+    });
+    performSearch(); refreshList();
 }
 
 // ====== 占用分析 ======
 var currentAnalyzePath = '/';
 var analyzeSelectedPaths = new Set();
-var analyzeCache = {}; // 【新增】分析数据缓存，防止后退重复计算
+var analyzeCache = {};
 
 async function showAnalyzeModal() {
     currentAnalyzePath = currentPath;
     analyzeSelectedPaths.clear();
     document.getElementById('analyzeDeleteBtn').classList.add('hidden');
-    analyzeCache = {}; // 每次打开窗口时清空缓存
+    analyzeCache = {};
     showModal('analyzeModal');
     await loadAnalyzeData(currentAnalyzePath);
 }
 
 async function loadAnalyzeData(path) {
     currentAnalyzePath = fixPath(path);
-    
-    // 渲染面包屑导航
     var breadcrumb = document.getElementById('analyzeBreadcrumb');
     var parts = currentAnalyzePath.split('/').filter(function(p){return p;});
     var html = '<a onclick="loadAnalyzeData(\'/\')" style="cursor:pointer; color: var(--primary); text-decoration: none;">/</a>';
@@ -2295,51 +2114,32 @@ async function loadAnalyzeData(path) {
         html += '<span style="color: var(--text-light);">/</span><a onclick="loadAnalyzeData(\'' + current + '\')" style="cursor:pointer; color: var(--primary); text-decoration: none;">' + part + '</a>';
     });
     breadcrumb.innerHTML = html;
-
     var tbody = document.getElementById('analyzeTableBody');
     var totalSizeEl = document.getElementById('analyzeTotalSize');
-    
-    // 【关键修复】如果缓存中有数据，直接使用缓存，不再请求后端
     if (analyzeCache[currentAnalyzePath]) {
         var cachedData = analyzeCache[currentAnalyzePath];
         totalSizeEl.textContent = cachedData.total_size_str;
         renderAnalyzeList(cachedData.items);
         return;
     }
-
     tbody.innerHTML = '<tr><td colspan="4" class="loading">分析中，请稍候...</td></tr>';
     totalSizeEl.textContent = '计算中...';
-
     try {
         var resp = await fetch('/api/files/analyze?path=' + encodeURIComponent(currentAnalyzePath));
         var data = await resp.json();
         if (data.success) {
-            analyzeCache[currentAnalyzePath] = data; // 存入缓存
+            analyzeCache[currentAnalyzePath] = data;
             totalSizeEl.textContent = data.total_size_str;
             renderAnalyzeList(data.items);
-        } else {
-            tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">' + (data.msg || '分析失败') + '</td></tr>';
-        }
-    } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">请求失败: ' + err + '</td></tr>';
-    }
+        } else { tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">' + (data.msg || '分析失败') + '</td></tr>'; }
+    } catch (err) { tbody.innerHTML = '<tr><td colspan="4" class="loading" style="color:red;">请求失败: ' + err + '</td></tr>'; }
 }
 
 function renderAnalyzeList(items) {
     var tbody = document.getElementById('analyzeTableBody');
     tbody.innerHTML = '';
-
-    // 【关键修复】过滤掉 kcore 等虚拟文件，防止误删
-    items = items.filter(function(item) {
-        return item.name !== 'kcore' && !item.path.includes('proc/kcore');
-    });
-
-    // 排序：文件夹优先，然后按大小降序
-    items.sort(function(a, b) {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return b.size - a.size;
-    });
-
+    items = items.filter(function(item) { return item.name !== 'kcore' && !item.path.includes('proc/kcore'); });
+    items.sort(function(a, b) { if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1; return b.size - a.size; });
     if (currentAnalyzePath !== '/') {
         var parentPath = fixPath(currentAnalyzePath.substring(0, currentAnalyzePath.lastIndexOf('/')) || '/');
         var tr = document.createElement('tr');
@@ -2348,91 +2148,62 @@ function renderAnalyzeList(items) {
         tr.onclick = function() { loadAnalyzeData(parentPath); };
         tbody.appendChild(tr);
     }
-
-    if (items.length === 0) {
-        tbody.innerHTML += '<tr><td colspan="4" class="loading">此目录为空</td></tr>';
-        return;
-    }
-
+    if (items.length === 0) { tbody.innerHTML += '<tr><td colspan="4" class="loading">此目录为空</td></tr>'; return; }
     items.forEach(function(item) {
         var tr = document.createElement('tr');
         tr.setAttribute('data-path', item.path);
         tr.setAttribute('data-isdir', item.is_dir);
-        var icon = item.is_dir ? '📁' : getFileIcon(item);
-        
+        var ext = (!item.is_dir && item.name && item.name.indexOf('.') > 0) ? item.name.split('.').pop().toLowerCase() : '';
+        var icon = item.is_dir ? '📁' : getFileIcon({extension: ext});
         var actionsHtml = '';
-        if (!item.is_dir) {
-            actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); editAnalyzeItem(\'' + item.path + '\')">编辑</button>';
-        }
+        if (!item.is_dir) actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); editAnalyzeItem(\'' + item.path + '\')">编辑</button>';
         actionsHtml += '<button class="action-btn" onclick="event.stopPropagation(); copyAnalyzePath(\'' + item.path + '\', this)">复制路径</button>';
         actionsHtml += '<button class="action-btn danger" onclick="event.stopPropagation(); deleteAnalyzeItem(\'' + item.path + '\')">删除</button>';
-        
         tr.innerHTML = '<td class="col-checkbox"><input type="checkbox"></td>' +
             '<td style="cursor: ' + (item.is_dir ? 'pointer' : 'default') + ';"><span class="file-icon">' + icon + '</span><span class="' + (item.is_dir ? 'dir-name' : 'file-name') + '">' + item.name + '</span></td>' +
             '<td style="text-align: right; padding-right: 20px;">' + item.size_str + '</td>' +
             '<td style="text-align: center; white-space: nowrap;">' + actionsHtml + '</td>';
-            
         var checkbox = tr.querySelector('input[type="checkbox"]');
         checkbox.onchange = function() { toggleAnalyzeSelect(this, item.path); };
-        
-        if (item.is_dir) {
-            tr.querySelector('td:nth-child(2)').onclick = function() { loadAnalyzeData(item.path); };
-        }
-        
+        if (item.is_dir) tr.querySelector('td:nth-child(2)').onclick = function() { loadAnalyzeData(item.path); };
         tbody.appendChild(tr);
     });
 }
 
 function toggleAnalyzeSelect(cb, path) {
-    if (cb.checked) analyzeSelectedPaths.add(path);
-    else analyzeSelectedPaths.delete(path);
+    if (cb.checked) analyzeSelectedPaths.add(path); else analyzeSelectedPaths.delete(path);
     document.getElementById('analyzeDeleteBtn').classList.toggle('hidden', analyzeSelectedPaths.size === 0);
 }
 
 function toggleAnalyzeSelectAll(cb) {
     var cbs = document.querySelectorAll('#analyzeTableBody input[type="checkbox"]');
     analyzeSelectedPaths.clear();
-    for (var i = 0; i < cbs.length; i++) {
-        cbs[i].checked = cb.checked;
-        cbs[i].onchange();
-    }
+    for (var i = 0; i < cbs.length; i++) { cbs[i].checked = cb.checked; cbs[i].onchange(); }
 }
 
 function copyAnalyzePath(path, btn) {
     copyToClipboard(path);
     var cb = btn.closest('tr').querySelector('input[type="checkbox"]');
-    if (!cb.checked) {
-        cb.checked = true;
-        analyzeSelectedPaths.add(path);
-        document.getElementById('analyzeDeleteBtn').classList.remove('hidden');
-    }
+    if (!cb.checked) { cb.checked = true; analyzeSelectedPaths.add(path); document.getElementById('analyzeDeleteBtn').classList.remove('hidden'); }
     var originalText = btn.textContent;
     btn.textContent = '已复制';
     setTimeout(function() { btn.textContent = originalText; }, 2000);
 }
 
-function editAnalyzeItem(path) {
-    editFile(path);
-}
+function editAnalyzeItem(path) { editFile(path); }
 
 async function deleteAnalyzeItem(path) {
     var fileName = path.split('/').pop();
     var msg = trashEnabled ? '确定将 ' + fileName + ' 移入回收站吗？' : '确定彻底删除 ' + fileName + ' 吗？';
     var confirmed = await showConfirmModal('确认删除', msg);
     if (!confirmed) return;
-    
     await fetch('/api/files/delete', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path, permanent: !trashEnabled })
     });
-    
-    // 【关键修复】清除当前目录的分析缓存，强制下次加载时从服务器拉取最新数据
-    if (analyzeCache[currentAnalyzePath]) {
-        delete analyzeCache[currentAnalyzePath];
-    }
-    
+    if (analyzeCache[currentAnalyzePath]) delete analyzeCache[currentAnalyzePath];
     await loadAnalyzeData(currentAnalyzePath);
-    refreshList(); // 刷新主页面
+    refreshList(); 
 }
 
 async function deleteAnalyzeItems() {
@@ -2441,7 +2212,6 @@ async function deleteAnalyzeItems() {
     var msg = trashEnabled ? '确定将选中的 ' + count + ' 个文件移入回收站吗？' : '确定彻底删除选中的 ' + count + ' 个文件吗？';
     var confirmed = await showConfirmModal('确认删除', msg);
     if (!confirmed) return;
-
     for (var p of analyzeSelectedPaths) {
         await fetch('/api/files/delete', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2450,50 +2220,358 @@ async function deleteAnalyzeItems() {
     }
     analyzeSelectedPaths.clear();
     document.getElementById('analyzeDeleteBtn').classList.add('hidden');
-    
-    // 【关键修复】清除当前目录的分析缓存，强制下次加载时从服务器拉取最新数据
-    if (analyzeCache[currentAnalyzePath]) {
-        delete analyzeCache[currentAnalyzePath];
-    }
-    
+    if (analyzeCache[currentAnalyzePath]) delete analyzeCache[currentAnalyzePath];
     await loadAnalyzeData(currentAnalyzePath);
     refreshList();
 }
 
 function openAnalyzePathInMain() {
     var targetPath = currentAnalyzePath; 
-
-    if (!analyzeSelectedPaths || analyzeSelectedPaths.size === 0) {
-        closeModal('analyzeModal');
-        loadFileList(targetPath);
-        return;
-    }
-
-    if (analyzeSelectedPaths.size > 1) {
-        alert('请只选择一个文件打开');
-        return;
-    }
-
+    if (!analyzeSelectedPaths || analyzeSelectedPaths.size === 0) { closeModal('analyzeModal'); loadFileList(targetPath); return; }
+    if (analyzeSelectedPaths.size > 1) { alert('请只选择一个文件打开'); return; }
     var selectedPath = Array.from(analyzeSelectedPaths)[0];
-
     var selectorPath = (window.CSS && CSS.escape) ? CSS.escape(selectedPath) : selectedPath;
     var row = document.querySelector('tr[data-path="' + selectorPath + '"]');
     var isDir = row ? (String(row.getAttribute('data-isdir')).toLowerCase() === 'true') : false;
-
-    if (isDir) {
-        targetPath = fixPath(selectedPath);
-    } else {
+    if (isDir) targetPath = fixPath(selectedPath);
+    else {
         var normalized = String(selectedPath).replace(/\\/g, '/');
         var idx = normalized.lastIndexOf('/');
         var parentDir = (idx > 0) ? normalized.slice(0, idx) : '/';
         targetPath = fixPath(parentDir);
     }
-
-    closeModal('analyzeModal');
-    loadFileList(targetPath);
+    closeModal('analyzeModal'); loadFileList(targetPath);
 }
 
 document.addEventListener('keydown', function(e) {
     if (e.key === 'F5') { e.preventDefault(); refreshList(); }
     if (e.key === 'Backspace' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') { goBack(); }
 });
+
+// ====== 文件分享功能 ======
+var currentShareUrl = '';
+var currentShareName = '';
+var editingShareId = null; // 记录正在编辑的分享ID
+
+function shareAction() {
+    editingShareId = null; // 正常分享模式
+    var paths = Array.from(selectedPaths);
+    if (paths.length === 0) { showAlert('请先选择要分享的文件'); return; }
+    
+    // 【关键修复】打开新分享窗口时，清空上一次的链接记录，确保会生成新链接
+    currentShareUrl = '';
+    currentShareName = '';
+    
+    // 恢复正常分享模式的按钮显示
+    var updateBtn = document.getElementById('shareUpdateBtn');
+    var copyBtn = document.getElementById('shareCopyBtn');
+    var qrBtn = document.getElementById('shareQrBtn');
+    var cmdBtn = document.getElementById('shareCmdBtnContainer');
+    if (updateBtn) updateBtn.style.display = 'none'; // 正常模式隐藏延期
+    if (copyBtn) copyBtn.style.display = '';
+    if (qrBtn) qrBtn.style.display = '';
+    
+    var tip = document.getElementById('shareCopyTip');
+    if (tip) tip.style.opacity = '0';
+    
+    // 【新增判断】判断是否为单文件分享
+    var isSingleFile = false;
+    if (paths.length === 1) {
+        var row = document.querySelector('tr[data-path="' + paths[0].replace(/"/g, '\\"') + '"]');
+        if (row && row.getAttribute('data-isDir') === 'false') {
+            isSingleFile = true;
+        }
+    }
+    
+    // 只有单文件才显示下载命令按钮，否则隐藏
+    if (cmdBtn) {
+        cmdBtn.style.display = isSingleFile ? 'block' : 'none';
+    }
+    
+    showModal('shareConfigModal');
+}
+
+async function doShare(method) {
+    // 如果是编辑模式，直接使用原链接进行操作
+    if (editingShareId) {
+        if (method === 'copy') {
+            copyToClipboard(currentShareUrl);
+            var tip = document.getElementById('shareCopyTip');
+            if (tip) {
+                tip.textContent = '已复制链接到剪切板';
+                tip.style.opacity = '1';
+                clearTimeout(window._shareCopyTipTimer);
+                window._shareCopyTipTimer = setTimeout(function() { tip.style.opacity = '0'; }, 3000);
+            }
+        } else if (method === 'qr') {
+            showShareQR();
+        } else if (method === 'cmd') {
+            showShareCmd();
+        }
+        return;
+    }
+
+    // 【关键修复】如果当前窗口内还没有生成链接，则请求后端生成一次
+    if (!currentShareUrl) {
+        var paths = Array.from(selectedPaths);
+        var expireDays = document.querySelector('input[name="shareExpire"]:checked').value;
+        var resp = await fetch('/api/share/create', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ paths: paths, expire_days: parseInt(expireDays) })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            currentShareUrl = window.location.origin + data.url;
+            currentShareName = data.name;
+            updateBatchOps();
+        } else { 
+            showAlert(data.msg); 
+            return; // 生成失败则中断
+        }
+    }
+
+    // 根据点击的按钮执行对应操作（此时 currentShareUrl 已经有值了）
+    if (method === 'copy') {
+        copyToClipboard(currentShareUrl);
+        var tip = document.getElementById('shareCopyTip');
+        if (tip) {
+            tip.textContent = '已复制链接到剪切板';
+            tip.style.opacity = '1';
+            clearTimeout(window._shareCopyTipTimer);
+            window._shareCopyTipTimer = setTimeout(function() { tip.style.opacity = '0'; }, 3000);
+        }
+    } else if (method === 'qr') {
+        showShareQR();
+    } else if (method === 'cmd') {
+        showShareCmd();
+    }
+}
+
+// 修复：先弹窗，再安全渲染内容，确保即使渲染出错窗口也能弹出
+function showShareQR() {
+    // 1. 先关闭配置窗口并弹出二维码窗口
+    closeModal('shareConfigModal');
+    showModal('shareQRModal');
+
+    // 2. 安全渲染内容
+    try {
+        var qrFileNameEl = document.getElementById('qrFileName');
+        if (qrFileNameEl) qrFileNameEl.textContent = currentShareName || '未知文件';
+        
+        var paths = Array.from(selectedPaths);
+        var row = paths.length > 0 ? document.querySelector('tr[data-path="' + paths[0].replace(/"/g, '\\"') + '"]') : null;
+        var sizeEl = document.getElementById('qrFileSize');
+        var qrFileIconEl = document.getElementById('qrFileIcon');
+        
+        if (qrFileIconEl) {
+            if (!editingShareId && paths.length === 1 && row && row.getAttribute('data-isDir') === 'false') {
+                qrFileIconEl.innerHTML = getFileIcon({extension: currentShareName.split('.').pop()}) || '📄';
+                if (sizeEl) {
+                    var sizeCell = row.querySelector('.col-size');
+                    sizeEl.textContent = sizeCell ? sizeCell.textContent : '-';
+                    sizeEl.style.display = 'block';
+                }
+            } else {
+                qrFileIconEl.innerHTML = '📁';
+                if (sizeEl) sizeEl.style.display = 'none';
+            }
+        }
+        
+        var checkedRadio = document.querySelector('input[name="shareExpire"]:checked');
+        var expireDays = checkedRadio ? parseInt(checkedRadio.value) : 0;
+        var expireText = '永久有效';
+        if (expireDays > 0) {
+            var expireTime = new Date(Date.now() + expireDays * 86400000);
+            expireText = '有效期至: ' + expireTime.getFullYear() + '-' + 
+                         String(expireTime.getMonth()+1).padStart(2,'0') + '-' + 
+                         String(expireTime.getDate()).padStart(2,'0') + ' ' + 
+                         String(expireTime.getHours()).padStart(2,'0') + ':' + 
+                         String(expireTime.getMinutes()).padStart(2,'0') + ':' + 
+                         String(expireTime.getSeconds()).padStart(2,'0');
+        }
+        
+        var qrExpireTimeEl = document.getElementById('qrExpireTime');
+        if (qrExpireTimeEl) qrExpireTimeEl.textContent = expireText;
+        
+        var qrcodeDiv = document.getElementById('qrcode');
+        if (qrcodeDiv) {
+            qrcodeDiv.innerHTML = '';
+            if (typeof QRCode !== 'undefined' && currentShareUrl) {
+                new QRCode(qrcodeDiv, { text: currentShareUrl, width: 180, height: 180 });
+            } else {
+                qrcodeDiv.innerHTML = '<div style="color:#999;font-size:12px;">二维码生成失败</div>';
+            }
+        }
+    } catch (e) {
+        console.error('渲染二维码窗口时出错:', e);
+        // 即使出错也不影响窗口的显示
+    }
+}
+
+function cancelShareQR() { closeModal('shareQRModal'); showModal('shareConfigModal'); }
+
+function showShareCmd() {
+    var cmdText = 'wget -O "/www/' + currentShareName + '" "' + currentShareUrl + '"';
+    var cmdInput = document.getElementById('shareCmdText');
+    if (cmdInput) {
+        cmdInput.value = cmdText;
+        cmdInput.removeAttribute('readonly');
+        cmdInput.removeAttribute('disabled');
+        cmdInput.readOnly = false;
+        cmdInput.contentEditable = true;
+    }
+    closeModal('shareConfigModal');
+    showModal('shareCmdModal');
+}
+
+function cancelShareCmd() { closeModal('shareCmdModal'); showModal('shareConfigModal'); }
+
+function copyShareCmd() {
+    var cmdInput = document.getElementById('shareCmdText');
+    if (cmdInput) {
+        copyToClipboard(cmdInput.value);
+        var tip = document.getElementById('shareCmdTip');
+        if (tip) {
+            tip.style.opacity = '1';
+            clearTimeout(window._shareCmdTipTimer);
+            window._shareCmdTipTimer = setTimeout(function() { tip.style.opacity = '0'; }, 3000);
+        }
+    }
+}
+
+// 【修复】编辑分享功能，显示全部4个按钮，使用原链接
+function editShare(id) {
+    var share = null;
+    for (var i = 0; i < globalSharesData.length; i++) {
+        if (globalSharesData[i].id == id) {
+            share = globalSharesData[i];
+            break;
+        }
+    }
+    if (!share) {
+        showAlert('未找到分享记录');
+        return;
+    }
+    
+    editingShareId = id;
+    // 载入原链接信息，以便复制和二维码功能使用原链接
+    currentShareUrl = window.location.origin + share.url;
+    currentShareName = share.name;
+    
+    closeModal('shareListModal');
+    
+    // 编辑模式：4个按钮全部显示
+    var updateBtn = document.getElementById('shareUpdateBtn');
+    var copyBtn = document.getElementById('shareCopyBtn');
+    var qrBtn = document.getElementById('shareQrBtn');
+    var cmdBtn = document.getElementById('shareCmdBtnContainer');
+    if (updateBtn) updateBtn.style.display = '';
+    if (copyBtn) copyBtn.style.display = '';
+    if (qrBtn) qrBtn.style.display = '';
+    
+    var tip = document.getElementById('shareCopyTip');
+    if (tip) tip.style.opacity = '0';
+    
+    // 【新增判断】根据后端返回的分享数据判断是否为单文件
+    if (cmdBtn) {
+        // share.is_single_file 是后端返回的字段，表示是否为单文件分享
+        cmdBtn.style.display = (share.paths.length === 1 && share.is_single_file) ? 'block' : 'none';
+    }
+    
+    showModal('shareConfigModal');
+}
+
+// 新增：提交延期更新
+async function updateShareExpire() {
+    if (!editingShareId) return;
+    var expireDays = document.querySelector('input[name="shareExpire"]:checked').value;
+    
+    var resp = await fetch('/api/share/update', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: editingShareId, expire_days: parseInt(expireDays) })
+    });
+    var data = await resp.json();
+    if (data.success) {
+        closeModal('shareConfigModal');
+        showAlert('已更新有效期');
+        editingShareId = null;
+    } else {
+        showAlert(data.msg || '更新失败');
+    }
+}
+
+function showShareListModal() { showModal('shareListModal'); loadShareList(); }
+
+function loadShareList() {
+    var tbody = document.getElementById('shareTableBody');
+    tbody.innerHTML = '<tr><td colspan="4" class="loading">加载中...</td></tr>';
+    fetch('/api/share/list')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            tbody.innerHTML = '';
+            if (data.success && data.shares.length > 0) {
+                globalSharesData = data.shares; // 保存到全局变量以供编辑使用
+                data.shares.forEach(function(s) {
+                    var tr = document.createElement('tr');
+                    var expireHtml = '<span style="color:#999;">永久</span>';
+                    if (s.expire_time > 0) expireHtml = '<span class="share-countdown" data-expire="' + s.expire_time + '"></span>';
+                    var iconHtml;
+                    if (s.paths.length === 1 && s.is_single_file) {
+                        var sname = s.name || '';
+                        var sext = sname.indexOf('.') > 0 ? sname.split('.').pop().toLowerCase() : '';
+                        iconHtml = getFileIcon({extension: sext});
+                    } else iconHtml = '📁';
+                    var sizeHtml = s.size_str || '-';
+                    tr.innerHTML = '<td><span class="file-icon">' + iconHtml + '</span><span>' + s.name + '</span><br><small style="color:#999;">' + s.paths[0] + '</small></td>' +
+                                   '<td style="text-align: left; padding-left: 15px;">' + sizeHtml + '</td>' +
+                                   '<td>' + expireHtml + '</td>' +
+                                   '<td style="text-align: left; padding-left: 15px; padding-right: 20px; white-space: nowrap;">' +
+                                   '<button class="action-btn" onclick="copyShareListItem(\'' + s.url + '\', this)">复制链接</button>' +
+                                   '<button class="action-btn" onclick="editShare(\'' + s.id + '\')">编辑</button>' +
+                                   '<button class="action-btn danger" onclick="cancelShare(\'' + s.id + '\')">取消分享</button>' +
+                                   '</td>';
+                    tbody.appendChild(tr);
+                });
+                updateShareCountdowns();
+            } else {
+                globalSharesData = [];
+                tbody.innerHTML = '<tr><td colspan="4" class="loading">暂无分享记录</td></tr>';
+            }
+        });
+}
+
+function copyShareListItem(url, btn) {
+    copyToClipboard(window.location.origin + url);
+    btn.textContent = '已复制';
+    setTimeout(function() { btn.textContent = '复制链接'; }, 2000);
+}
+
+async function cancelShare(id, isEdit) {
+    if (!isEdit) {
+        var c = await showConfirmModal('确认取消', '确定取消该文件的分享吗？');
+        if (!c) return;
+    }
+    await fetch('/api/share/cancel', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: id })
+    });
+    if (!isEdit) loadShareList();
+    updateBatchOps();
+}
+
+function updateShareCountdowns() {
+    document.querySelectorAll('.share-countdown').forEach(function(el) {
+        var expire = parseInt(el.getAttribute('data-expire'));
+        var now = Math.floor(Date.now() / 1000);
+        var diff = expire - now;
+        if (diff <= 0) el.innerHTML = '<span style="color:#ff4d4f;">已过期</span>';
+        else {
+            var d = Math.floor(diff / 86400);
+            var h = Math.floor((diff % 86400) / 3600);
+            var m = Math.floor((diff % 3600) / 60);
+            var s = diff % 60;
+            el.textContent = d + '天 ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+        }
+    });
+}
+setInterval(updateShareCountdowns, 1000);
